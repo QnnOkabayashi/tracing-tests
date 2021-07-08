@@ -1,33 +1,35 @@
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::io::{self, Write as _};
 
 use crate::timings::Stopwatch;
 
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Id, Metadata, Subscriber};
-use tracing_subscriber::fmt::format::JsonFields;
-use tracing_subscriber::fmt::FormatFields;
 use tracing_subscriber::layer::{Context, Layered, SubscriberExt};
 use tracing_subscriber::registry::Registry;
 use tracing_subscriber::Layer;
+
+use crate::formatter::LogFmt;
 
 pub struct MySubscriber {
     inner: Layered<MyLayer, Registry>,
 }
 
-pub struct MyLayer;
+pub struct MyLayer {
+    fmt: LogFmt,
+}
 
 impl MySubscriber {
     pub fn new() -> Self {
         MySubscriber {
-            inner: Registry::default().with(MyLayer),
+            inner: Registry::default().with(MyLayer {
+                fmt: LogFmt::Pretty,
+            }),
         }
     }
 }
 
 pub struct MyBuffer {
-    path: String, // the string containing the spans it's wrapped in?
-    // this is poorly designed but hopefully works
     buf: Vec<u8>,
 }
 
@@ -43,7 +45,9 @@ impl Layer<Registry> for MyLayer {
         }
 
         if extensions.get_mut::<MyBuffer>().is_none() {
-            extensions.insert(MyBuffer::new(timed, span.name()));
+            let mut buf = MyBuffer::new(timed, span.name());
+            // self.fmt.new_span(&mut buf, id, &ctx).expect("Write failed");
+            extensions.insert(buf);
         }
     }
 
@@ -73,18 +77,9 @@ impl Layer<Registry> for MyLayer {
             .get_mut::<MyBuffer>()
             .expect("Log buffer not found, this is a bug");
 
-        // I think making a new `JsonFields` each call to event basically compiles down to nothing
-        JsonFields::new().format_fields(buf, event).unwrap();
-
-        // The lifetime requires that the `fmt::Write` object must live as long
-        // as the actual formatter itself. This is super fucking annoying.
-        // Two options:
-        // 1. We make the buffer somehow live as long as the `KaniLayer` instance.
-        // 2. We make each span have its own `FormatFields`.
-        //
-        // Option 1 sucks, because then I have to do interior mutability and that's a hard no from me
-        // Option 2 is kinda sus, but `FormatFields`s are usually ZST's, so it's not even that bad. It just
-        // means that every single span will have to be assigned a formatter.
+        self.fmt
+            .write_event(buf, event, &ctx)
+            .expect("Write failed");
     }
 
     /*
@@ -116,10 +111,13 @@ impl Layer<Registry> for MyLayer {
             timings.now_idle();
         }
 
-        let logs = extensions
+        let logbuf = extensions
             .get_mut::<MyBuffer>()
-            .expect("Log buffer not found, this is a bug")
-            .dump();
+            .expect("Log buffer not found, this is a bug");
+
+        // self.fmt.close_span(logbuf, id, &ctx).expect("Write failed");
+
+        let logs = logbuf.dump();
 
         match span.parent() {
             Some(parent) => {
@@ -146,7 +144,6 @@ impl MyBuffer {
     fn new(timed: bool, name: &str) -> Self {
         let res = MyBuffer {
             // TODO: use ctx to get information about what this should be
-            path: format!("{} (timed = {})", name, timed),
             buf: vec![],
         };
         // TODO: update this to use the ctx to get span information
@@ -199,18 +196,4 @@ impl Subscriber for MySubscriber {
     fn exit(&self, span: &Id) {
         self.inner.exit(span)
     }
-}
-
-#[test]
-fn test1() {
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .finish();
-
-    tracing::subscriber::with_default(subscriber, || {
-        tracing::info_span!("wrapper span").in_scope(|| {
-            tracing::error!("a big error!");
-        });
-        tracing::trace!("lol silly trace");
-    })
 }

@@ -1,22 +1,10 @@
-use serde::{ser::SerializeMap, Serialize};
+use serde::Serialize;
 use std::time::Instant;
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub struct Timings {
     pub idle: u64,
     pub busy: u64,
-}
-
-impl Serialize for Timings {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("busy", &self.busy)?;
-        map.serialize_entry("idle", &self.idle)?;
-        map.end()
-    }
 }
 
 pub struct Stopwatch {

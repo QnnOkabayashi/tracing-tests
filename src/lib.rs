@@ -1,6 +1,9 @@
-pub(crate) mod event;
+pub mod formatter;
 pub mod subscriber;
 pub(crate) mod timings;
+
+#[macro_use]
+pub mod macros;
 
 #[cfg(test)]
 mod tests {
@@ -10,24 +13,27 @@ mod tests {
     #[test]
     fn trace_test() {
         tracing::subscriber::with_default(MySubscriber::new(), || {
-            tracing::trace_span!("Wrapper").in_scope(|| {
-                tracing::error!("oh no!");
+            tracing::trace_span!("A").in_scope(|| {
+                tracing::trace_span!("B").in_scope(|| {
+                    // non-string values are ignored
+                    tracing::error!(message = "oh no!", tag = "admin", age = 10);
+                    alarm!("oh man, it's {}", 3);
+                })
             })
-        })
+        });
     }
 
     #[test]
     fn tracing_subscriber_builtins() {
         use tracing::Level;
-        use tracing_subscriber::field::MakeExt;
-        use tracing_subscriber::fmt::format::{debug_fn, FmtSpan};
+        use tracing_subscriber::fmt::format::FmtSpan;
 
         let subscriber = tracing_subscriber::fmt()
             // SETTINGS
             .with_max_level(Level::TRACE)
             // .with_ansi(false) // no colors (good for .log files)
             // JSON
-            .json() // machine-readable
+            // .json() // machine-readable
             // .with_span_list(false) // displays all open spans
             .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE) // logs when `span`s are initialized or terminated
             // .fmt_fields({
@@ -41,8 +47,12 @@ mod tests {
             .finish();
 
         tracing::subscriber::with_default(subscriber, || {
-            tracing::trace_span!("Wrapper").in_scope(|| {
-                tracing::error!("oh no!");
+            tracing::trace_span!("A").in_scope(|| {
+                tracing::trace_span!("B").in_scope(|| {
+                    tracing::trace_span!("C").in_scope(|| {
+                        tracing::error!("oh no!");
+                    })
+                })
             })
         })
     }
