@@ -8,15 +8,17 @@ pub mod macros;
 #[cfg(test)]
 mod tests {
     use crate::subscriber::MySubscriber;
-    use tracing;
+    use tokio;
+    use tokio::time::{sleep, Duration};
+    use tracing::{self, info, info_span, Level};
+    use tracing_subscriber::fmt::format::FmtSpan;
 
     #[test]
     fn trace_test() {
-        tracing::subscriber::with_default(MySubscriber::new(), || {
+        tracing::subscriber::with_default(MySubscriber::pretty(), || {
             tracing::trace_span!("A").in_scope(|| {
                 tracing::trace_span!("B").in_scope(|| {
-                    // non-string values are ignored
-                    tracing::error!(message = "oh no!", tag = "admin", age = 10);
+                    tracing::error!(tag = "admin", "oh no!");
                     alarm!("oh man, it's {}", 3);
                 })
             })
@@ -25,9 +27,6 @@ mod tests {
 
     #[test]
     fn tracing_subscriber_builtins() {
-        use tracing::Level;
-        use tracing_subscriber::fmt::format::FmtSpan;
-
         let subscriber = tracing_subscriber::fmt()
             // SETTINGS
             .with_max_level(Level::TRACE)
@@ -55,5 +54,54 @@ mod tests {
                 })
             })
         })
+    }
+
+    #[tokio::test]
+    async fn async_tests() {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(Level::TRACE)
+            // .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE) // logs when `span`s are initialized or terminated
+            .finish();
+
+        let subscriber = MySubscriber::pretty();
+
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+
+        // #[tracing::instrument]
+        async fn first() {
+            let span = info_span!("first");
+
+            span.in_scope(|| {
+                info!("before");
+            });
+
+            sleep(Duration::from_millis(500)).await;
+
+            span.in_scope(|| {
+                info!("after");
+            });
+        }
+
+        // #[tracing::instrument]
+        async fn second() {
+            let span = info_span!("second");
+
+            sleep(Duration::from_millis(250)).await;
+
+            span.in_scope(|| {
+                info!("Going to sleep...");
+            });
+
+            sleep(Duration::from_millis(500)).await;
+
+            span.in_scope(|| {
+                info!("Awake!");
+            });
+        }
+
+        let a = first();
+        let b = second();
+
+        tokio::join!(a, b);
     }
 }
