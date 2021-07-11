@@ -1,9 +1,10 @@
 use chrono::Utc;
 use std::fmt;
 use tracing::field::{Field, Visit};
-use tracing::{Event, Id};
+use tracing::Event;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Registry;
+// use tracing_subscriber::fmt::Layer;
 
 pub enum LogFmt {
     Json,
@@ -11,15 +12,15 @@ pub enum LogFmt {
 }
 
 impl LogFmt {
-    pub fn write_event(
+    pub fn format_event(
         &self,
         writer: &mut dyn fmt::Write,
         event: &Event,
         ctx: &Context<Registry>,
     ) -> fmt::Result {
+        let ts = Utc::now();
         match *self {
             Self::Json => {
-                let ts = Utc::now();
                 write!(
                     writer,
                     r#"{{"timestamp":"{ts}","level":"{level}","fields":{{"#,
@@ -28,28 +29,31 @@ impl LogFmt {
                 )?;
 
                 struct Visitor<'writer> {
-                    first: bool,
                     writer: &'writer mut dyn fmt::Write,
                 }
 
                 impl<'writer> Visit for Visitor<'writer> {
                     fn record_str(&mut self, field: &Field, value: &str) {
-                        if self.first {
-                            self.first = false;
-                        } else {
-                            self.writer.write_char(',').expect("Write failed");
-                        }
-                        write!(self.writer, r#""{}":"{}""#, field.name(), value)
+                        write!(self.writer, r#","{}":"{}""#, field.name(), value)
                             .expect("Write failed");
                     }
 
-                    fn record_debug(&mut self, _field: &Field, _value: &dyn fmt::Debug) {}
+                    fn record_bool(&mut self, _: &Field, _: bool) {}
+
+                    fn record_error(&mut self, _: &Field, _: &(dyn std::error::Error + 'static)) {}
+
+                    fn record_i64(&mut self, _: &Field, _: i64) {}
+
+                    fn record_u64(&mut self, _: &Field, _: u64) {}
+
+                    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+                        if field.name() == "message" {
+                            write!(self.writer, r#""message":"{:?}""#, value).expect("Write failed")
+                        }
+                    }
                 }
 
-                event.record(&mut Visitor {
-                    first: true,
-                    writer,
-                });
+                event.record(&mut Visitor { writer });
 
                 write!(
                     writer,
@@ -71,7 +75,6 @@ impl LogFmt {
                 writeln!(writer, "]}}")
             }
             Self::Pretty => {
-                let ts = Utc::now();
                 write!(
                     writer,
                     "{ts} {level} ",
@@ -89,66 +92,37 @@ impl LogFmt {
 
                 // NOTE: The first field MUST be "message"
                 struct Visitor<'writer> {
-                    first: bool,
                     writer: &'writer mut dyn fmt::Write,
                 }
 
                 impl<'writer> Visit for Visitor<'writer> {
                     fn record_str(&mut self, field: &Field, value: &str) {
-                        if self.first {
-                            self.first = false;
-                            self.writer.write_str(value)
-                        } else {
-                            write!(self.writer, " | {}={}", field.name(), value)
-                        }
-                        .expect("Write failed");
+                        write!(self.writer, " | {}={}", field.name(), value).expect("Write failed");
                     }
 
-                    fn record_debug(&mut self, _field: &Field, _value: &dyn fmt::Debug) {}
+                    fn record_bool(&mut self, _field: &Field, _value: bool) {}
+
+                    fn record_error(
+                        &mut self,
+                        _field: &Field,
+                        _value: &(dyn std::error::Error + 'static),
+                    ) {
+                    }
+
+                    fn record_i64(&mut self, _field: &Field, _value: i64) {}
+
+                    fn record_u64(&mut self, _field: &Field, _value: u64) {}
+
+                    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+                        if field.name() == "message" {
+                            write!(self.writer, "{:?}", value).expect("Write failed")
+                        }
+                    }
                 }
 
-                event.record(&mut Visitor {
-                    first: true,
-                    writer,
-                });
+                event.record(&mut Visitor { writer });
 
                 writeln!(writer)
-            }
-        }
-    }
-
-    // TODO
-    pub fn new_span(
-        &self,
-        writer: &mut dyn fmt::Write,
-        id: &Id,
-        ctx: &Context<Registry>,
-    ) -> fmt::Result {
-        let _ = (writer, id, ctx);
-        match *self {
-            Self::Json => {
-                todo!()
-            }
-            Self::Pretty => {
-                todo!()
-            }
-        }
-    }
-
-    // TODO
-    pub fn close_span(
-        &self,
-        writer: &mut dyn fmt::Write,
-        id: &Id,
-        ctx: &Context<Registry>,
-    ) -> fmt::Result {
-        let _ = (writer, id, ctx);
-        match *self {
-            Self::Json => {
-                todo!()
-            }
-            Self::Pretty => {
-                todo!()
             }
         }
     }

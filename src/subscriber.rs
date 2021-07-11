@@ -20,7 +20,13 @@ pub struct MyLayer {
 }
 
 impl MySubscriber {
-    pub fn new() -> Self {
+    pub fn json() -> Self {
+        MySubscriber {
+            inner: Registry::default().with(MyLayer { fmt: LogFmt::Json }),
+        }
+    }
+
+    pub fn pretty() -> Self {
         MySubscriber {
             inner: Registry::default().with(MyLayer {
                 fmt: LogFmt::Pretty,
@@ -45,7 +51,7 @@ impl Layer<Registry> for MyLayer {
         }
 
         if extensions.get_mut::<MyBuffer>().is_none() {
-            let mut buf = MyBuffer::new(timed, span.name());
+            let buf = MyBuffer::new(timed, span.name());
             // self.fmt.new_span(&mut buf, id, &ctx).expect("Write failed");
             extensions.insert(buf);
         }
@@ -78,7 +84,7 @@ impl Layer<Registry> for MyLayer {
             .expect("Log buffer not found, this is a bug");
 
         self.fmt
-            .write_event(buf, event, &ctx)
+            .format_event(buf, event, &ctx)
             .expect("Write failed");
     }
 
@@ -141,7 +147,7 @@ impl Layer<Registry> for MyLayer {
 }
 
 impl MyBuffer {
-    fn new(timed: bool, name: &str) -> Self {
+    fn new(_timed: bool, _name: &str) -> Self {
         let res = MyBuffer {
             // TODO: use ctx to get information about what this should be
             buf: vec![],
