@@ -58,28 +58,32 @@ mod tests {
 
     #[tokio::test]
     async fn async_tests() {
-        let _subscriber = tracing_subscriber::fmt()
+        let _default_subscriber = tracing_subscriber::fmt()
             .with_max_level(Level::TRACE)
             .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE) // logs when `span`s are initialized or terminated
             .finish();
 
-        let subscriber = MySubscriber::pretty();
+        let _custom_subscriber = MySubscriber::pretty();
+
+        // select which one to try!
+        // let subscriber = _default_subscriber;
+        let subscriber = _custom_subscriber;
 
         tracing::subscriber::set_global_default(subscriber).unwrap();
 
         #[instrument(level = "trace")]
         async fn first() {
-            error!("before");
+            error!("First event");
             sleep(Duration::from_millis(500)).await;
-            error!("after");
+            error!("Third event");
         }
 
         #[instrument(level = "trace", fields(timed = true))]
         async fn second() {
             sleep(Duration::from_millis(250)).await;
-            info!("Going to sleep...");
+            info!("Second event");
             sleep(Duration::from_millis(500)).await;
-            info!("Awake!");
+            info!("Fourth event");
         }
 
         let a = first();
