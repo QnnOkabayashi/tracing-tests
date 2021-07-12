@@ -64,21 +64,13 @@ impl MyLayer {
     }
 }
 
-struct DebugStr<'a>(&'a str);
-
-impl<'a> fmt::Debug for DebugStr<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 macro_rules! with_labeled_event {
     ($id:ident, $span:ident, $message:literal, {$($field:literal: $value:expr),*}, |$event:ident| $code:block) => {
         let meta = $span.metadata();
         let cs = meta.callsite();
         let fs = field::FieldSet::new(&["message",$($field),*], cs);
         let mut iter = fs.iter();
-        let message = field::debug(crate::subscriber::DebugStr($message));
+        let message = field::display($message);
         let v = [
             (&iter.next().unwrap(), Some(&message as &dyn field::Value)),
             $(
