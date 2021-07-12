@@ -3,8 +3,8 @@ use std::time::Instant;
 
 #[derive(Default, Serialize)]
 pub struct Timings {
-    pub idle: u64,
-    pub busy: u64,
+    idle: u64,
+    busy: u64,
 }
 
 pub struct Stopwatch {
@@ -32,5 +32,13 @@ impl Stopwatch {
         let now = Instant::now();
         self.timings.idle += (now - self.last).as_nanos() as u64;
         self.last = now;
+    }
+
+    pub fn idle(&self) -> u64 {
+        self.timings.idle
+    }
+
+    pub fn busy(&self) -> u64 {
+        self.timings.busy
     }
 }

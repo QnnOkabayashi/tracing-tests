@@ -10,7 +10,7 @@ mod tests {
     use crate::subscriber::MySubscriber;
     use tokio;
     use tokio::time::{sleep, Duration};
-    use tracing::{self, info, info_span, Level};
+    use tracing::{self, error, info, instrument, Level};
     use tracing_subscriber::fmt::format::FmtSpan;
 
     #[test]
@@ -58,45 +58,28 @@ mod tests {
 
     #[tokio::test]
     async fn async_tests() {
-        let subscriber = tracing_subscriber::fmt()
+        let _subscriber = tracing_subscriber::fmt()
             .with_max_level(Level::TRACE)
-            // .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE) // logs when `span`s are initialized or terminated
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE) // logs when `span`s are initialized or terminated
             .finish();
 
         let subscriber = MySubscriber::pretty();
 
         tracing::subscriber::set_global_default(subscriber).unwrap();
 
-        // #[tracing::instrument]
+        #[instrument(level = "trace")]
         async fn first() {
-            let span = info_span!("first");
-
-            span.in_scope(|| {
-                info!("before");
-            });
-
+            error!("before");
             sleep(Duration::from_millis(500)).await;
-
-            span.in_scope(|| {
-                info!("after");
-            });
+            error!("after");
         }
 
-        // #[tracing::instrument]
+        #[instrument(level = "trace", fields(timed = true))]
         async fn second() {
-            let span = info_span!("second");
-
             sleep(Duration::from_millis(250)).await;
-
-            span.in_scope(|| {
-                info!("Going to sleep...");
-            });
-
+            info!("Going to sleep...");
             sleep(Duration::from_millis(500)).await;
-
-            span.in_scope(|| {
-                info!("Awake!");
-            });
+            info!("Awake!");
         }
 
         let a = first();

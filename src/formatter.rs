@@ -14,7 +14,7 @@ pub enum LogFmt {
 impl LogFmt {
     pub fn format_event(
         &self,
-        writer: &mut dyn fmt::Write,
+        writer: &mut impl fmt::Write,
         event: &Event,
         ctx: &Context<Registry>,
     ) -> fmt::Result {
@@ -28,16 +28,12 @@ impl LogFmt {
                     level = event.metadata().level(),
                 )?;
 
-                struct Visitor<'writer> {
-                    writer: &'writer mut dyn fmt::Write,
+                struct Visitor<'writer, W> {
+                    first: bool,
+                    writer: &'writer mut W,
                 }
 
-                impl<'writer> Visit for Visitor<'writer> {
-                    fn record_str(&mut self, field: &Field, value: &str) {
-                        write!(self.writer, r#","{}":"{}""#, field.name(), value)
-                            .expect("Write failed");
-                    }
-
+                impl<'writer, W: fmt::Write> Visit for Visitor<'writer, W> {
                     fn record_bool(&mut self, _: &Field, _: bool) {}
 
                     fn record_error(&mut self, _: &Field, _: &(dyn std::error::Error + 'static)) {}
@@ -47,13 +43,20 @@ impl LogFmt {
                     fn record_u64(&mut self, _: &Field, _: u64) {}
 
                     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-                        if field.name() == "message" {
-                            write!(self.writer, r#""message":"{:?}""#, value).expect("Write failed")
+                        if self.first {
+                            self.first = false;
+                        } else {
+                            self.writer.write_char(',').expect("Write failed");
                         }
+                        write!(self.writer, r#""{}":"{:?}""#, field.name(), value)
+                            .expect("Write failed");
                     }
                 }
 
-                event.record(&mut Visitor { writer });
+                event.record(&mut Visitor {
+                    first: true,
+                    writer,
+                });
 
                 write!(
                     writer,
@@ -77,7 +80,7 @@ impl LogFmt {
             Self::Pretty => {
                 write!(
                     writer,
-                    "{ts} {level} ",
+                    "{ts} {level:>5} ",
                     ts = ts.format("%b %m %H:%M:%S.%3f"),
                     level = event.metadata().level(),
                 )?;
@@ -90,32 +93,25 @@ impl LogFmt {
 
                 write!(writer, " {}: ", event.metadata().target())?;
 
-                // NOTE: The first field MUST be "message"
-                struct Visitor<'writer> {
-                    writer: &'writer mut dyn fmt::Write,
+                struct Visitor<'writer, W> {
+                    writer: &'writer mut W,
                 }
 
-                impl<'writer> Visit for Visitor<'writer> {
-                    fn record_str(&mut self, field: &Field, value: &str) {
-                        write!(self.writer, " | {}={}", field.name(), value).expect("Write failed");
-                    }
+                impl<'writer, W: fmt::Write> Visit for Visitor<'writer, W> {
+                    fn record_bool(&mut self, _: &Field, _: bool) {}
 
-                    fn record_bool(&mut self, _field: &Field, _value: bool) {}
+                    fn record_error(&mut self, _: &Field, _: &(dyn std::error::Error + 'static)) {}
 
-                    fn record_error(
-                        &mut self,
-                        _field: &Field,
-                        _value: &(dyn std::error::Error + 'static),
-                    ) {
-                    }
+                    fn record_i64(&mut self, _: &Field, _: i64) {}
 
-                    fn record_i64(&mut self, _field: &Field, _value: i64) {}
-
-                    fn record_u64(&mut self, _field: &Field, _value: u64) {}
+                    fn record_u64(&mut self, _: &Field, _: u64) {}
 
                     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
                         if field.name() == "message" {
                             write!(self.writer, "{:?}", value).expect("Write failed")
+                        } else {
+                            write!(self.writer, " | {}={:?}", field.name(), value)
+                                .expect("Write failed")
                         }
                     }
                 }
