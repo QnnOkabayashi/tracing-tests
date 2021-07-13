@@ -79,9 +79,9 @@ mod tests {
 
         #[instrument(level = "trace")]
         async fn first() {
-            error!("First event");
+            filter_error!("First event");
             sleep(Duration::from_millis(500)).await;
-            error!("Third event");
+            admin_error!("Third event");
         }
 
         #[instrument(level = "trace", fields(timed = true))]
