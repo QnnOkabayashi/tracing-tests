@@ -4,7 +4,6 @@ use tracing::field::{Field, Visit};
 use tracing::Event;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Registry;
-// use tracing_subscriber::fmt::Layer;
 
 pub enum LogFmt {
     Json,
@@ -12,9 +11,9 @@ pub enum LogFmt {
 }
 
 impl LogFmt {
-    pub fn format_event(
+    pub fn format_event<W: fmt::Write>(
         &self,
-        writer: &mut impl fmt::Write,
+        writer: &mut W,
         event: &Event,
         ctx: &Context<Registry>,
     ) -> fmt::Result {
@@ -28,35 +27,13 @@ impl LogFmt {
                     level = event.metadata().level(),
                 )?;
 
-                struct Visitor<'writer, W> {
-                    first: bool,
-                    writer: &'writer mut W,
-                }
-
-                impl<'writer, W: fmt::Write> Visit for Visitor<'writer, W> {
-                    fn record_bool(&mut self, _: &Field, _: bool) {}
-
-                    fn record_error(&mut self, _: &Field, _: &(dyn std::error::Error + 'static)) {}
-
-                    fn record_i64(&mut self, _: &Field, _: i64) {}
-
-                    fn record_u64(&mut self, _: &Field, _: u64) {}
-
-                    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-                        if self.first {
-                            self.first = false;
-                        } else {
-                            self.writer.write_char(',').expect("Write failed");
-                        }
-                        write!(self.writer, r#""{}":"{:?}""#, field.name(), value)
-                            .expect("Write failed");
-                    }
-                }
-
-                event.record(&mut Visitor {
-                    first: true,
+                event.record(&mut Visitor::new(
                     writer,
-                });
+                    |w: &mut W, value: &dyn fmt::Debug| write!(w, r#""message":"{:?}""#, value),
+                    |w: &mut W, field: &Field, value: &dyn fmt::Debug| {
+                        write!(w, r#","{}":"{:?}""#, field.name(), value)
+                    },
+                ));
 
                 write!(
                     writer,
@@ -93,33 +70,52 @@ impl LogFmt {
 
                 write!(writer, " {}: ", event.metadata().target())?;
 
-                struct Visitor<'writer, W> {
-                    writer: &'writer mut W,
-                }
-
-                impl<'writer, W: fmt::Write> Visit for Visitor<'writer, W> {
-                    fn record_bool(&mut self, _: &Field, _: bool) {}
-
-                    fn record_error(&mut self, _: &Field, _: &(dyn std::error::Error + 'static)) {}
-
-                    fn record_i64(&mut self, _: &Field, _: i64) {}
-
-                    fn record_u64(&mut self, _: &Field, _: u64) {}
-
-                    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-                        if field.name() == "message" {
-                            write!(self.writer, "{:?}", value).expect("Write failed")
-                        } else {
-                            write!(self.writer, " | {}={:?}", field.name(), value)
-                                .expect("Write failed")
-                        }
-                    }
-                }
-
-                event.record(&mut Visitor { writer });
+                event.record(&mut Visitor::new(
+                    writer,
+                    |w: &mut W, value: &dyn fmt::Debug| write!(w, "{:?}", value),
+                    |w: &mut W, field: &Field, value: &dyn fmt::Debug| {
+                        write!(w, " | {}={:?}", field.name(), value)
+                    },
+                ));
 
                 writeln!(writer)
             }
         }
+    }
+}
+
+struct Visitor<'writer, W, MsgFn, KeyFn> {
+    first: bool,
+    writer: &'writer mut W,
+    on_msg: MsgFn,
+    on_key: KeyFn,
+}
+
+impl<'writer, W, MsgFn, KeyFn> Visitor<'writer, W, MsgFn, KeyFn> {
+    fn new(writer: &'writer mut W, on_msg: MsgFn, on_key: KeyFn) -> Self {
+        Visitor {
+            first: true,
+            writer,
+            on_msg,
+            on_key,
+        }
+    }
+}
+
+impl<'writer, W, MsgFn, KeyFn> Visit for Visitor<'writer, W, MsgFn, KeyFn>
+where
+    W: fmt::Write,
+    MsgFn: FnMut(&mut W, &dyn fmt::Debug) -> fmt::Result,
+    KeyFn: FnMut(&mut W, &Field, &dyn fmt::Debug) -> fmt::Result,
+{
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        if self.first {
+            assert!(field.name() == "message", "First field must be \"message\"");
+            self.first = false;
+            (self.on_msg)(self.writer, value)
+        } else {
+            (self.on_key)(self.writer, field, value)
+        }
+        .expect("Write failed")
     }
 }
