@@ -10,7 +10,7 @@ use tracing_subscriber::registry::Registry;
 use tracing_subscriber::Layer;
 
 use crate::formatter::LogFmt;
-use crate::timings::Stopwatch;
+use crate::timings::Timings;
 
 pub struct MySubscriber {
     inner: Layered<MyLayer, Registry>,
@@ -117,8 +117,8 @@ impl Layer<Registry> for MyLayer {
 
         let mut extensions = span.extensions_mut();
 
-        if timed && extensions.get_mut::<Stopwatch>().is_none() {
-            extensions.insert(Stopwatch::new());
+        if timed && extensions.get_mut::<Timings>().is_none() {
+            extensions.insert(Timings::new());
         }
 
         if extensions.get_mut::<MyBuffer>().is_none() {
@@ -127,7 +127,7 @@ impl Layer<Registry> for MyLayer {
         }
 
         // TODO: maybe add `FmtSpan` flags to choose which of these we want
-        with_labeled_event!(id, span, "opened", {}, |event| {
+        with_labeled_event!(id, span, "[opened]", {}, |event| {
             drop(extensions);
             self.log_event(&event, &ctx);
         });
@@ -142,12 +142,9 @@ impl Layer<Registry> for MyLayer {
 
         let mut extensions = span.extensions_mut();
 
-        if let Some(timings) = extensions.get_mut::<Stopwatch>() {
+        if let Some(timings) = extensions.get_mut::<Timings>() {
             timings.now_busy();
         }
-
-        // TODO: maybe log how long the span was idle for? could be nice to see
-        // where there were breaks in execution
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<Registry>) {
@@ -155,7 +152,7 @@ impl Layer<Registry> for MyLayer {
 
         let mut extensions = span.extensions_mut();
 
-        if let Some(timings) = extensions.get_mut::<Stopwatch>() {
+        if let Some(timings) = extensions.get_mut::<Timings>() {
             timings.now_idle();
         }
     }
@@ -166,35 +163,17 @@ impl Layer<Registry> for MyLayer {
         let mut extensions = span.extensions_mut();
         // `tracing_subscriber` also just calls the macro twice,
         // so at least this isn't worse than that.
-        if let Some(stopwatch) = extensions.remove::<Stopwatch>() {
-            // Thanks for making this private :(, guess I'll just copy paste
-            // https://github.com/tokio-rs/tracing/blob/c848820fc62c274d3df1be61303d97f3b6802673/tracing-subscriber/src/fmt/format/mod.rs#L1229-L1245
-            struct TimingDisplay(u64);
-            impl fmt::Display for TimingDisplay {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    let mut t = self.0 as f64;
-                    for unit in ["ns", "µs", "ms", "s"].iter() {
-                        if t < 10.0 {
-                            return write!(f, "{:.2}{}", t, unit);
-                        } else if t < 100.0 {
-                            return write!(f, "{:.1}{}", t, unit);
-                        } else if t < 1000.0 {
-                            return write!(f, "{:.0}{}", t, unit);
-                        }
-                        t /= 1000.0;
-                    }
-                    write!(f, "{:.0}s", t * 1000.0)
-                }
-            }
+        if let Some(timings) = extensions.remove::<Timings>() {
 
-            let busy = field::display(TimingDisplay(stopwatch.busy()));
-            let idle = field::display(TimingDisplay(stopwatch.idle()));
-            with_labeled_event!(id, span, "closed", {"time.busy": busy, "time.idle": idle }, |event| {
+
+            let busy = timings.display_busy();
+            let idle = timings.display_idle();
+            with_labeled_event!(id, span, "[closed]", {"time.busy": busy, "time.idle": idle }, |event| {
                 drop(extensions);
                 self.log_event(&event, &ctx);
             });
         } else {
-            with_labeled_event!(id, span, "closed", {}, |event| {
+            with_labeled_event!(id, span, "[closed]", {}, |event| {
                 drop(extensions);
                 self.log_event(&event, &ctx);
             });
