@@ -1,16 +1,10 @@
 [
-    {
-        "timestamp":"Jul 07 15:01:48.796",
-        "level":"TRACE",
-        "fields":{
-            "message": "new"
-        },
-        "target":"tracing_tests::tests",
-        "span":{
-            "name":"Wrapper"
-        },
-        "spans":[]
-    },
-    {"timestamp":"Jul 07 15:01:48.797","level":"ERROR","fields":{"message":"oh no!"},"target":"tracing_tests::tests","span":{"name":"Wrapper"},"spans":[{"name":"Wrapper"}]},
-    {"timestamp":"Jul 07 15:01:48.798","level":"TRACE","fields":{},"message":"close","time.busy":"249µs","time.idle":"2.02ms","target":"tracing_tests::tests","span":{"name":"Wrapper"},"spans":[]}
+    {"timestamp":"Jul 07 21:45:58.187","level":"TRACE","fields":{"message":"opened"},"target":"tracing_tests::tests","spans":["first"]},
+    {"timestamp":"Jul 07 21:45:58.187","level":"ERROR","fields":{"message":"First event","tag":"filter"},"target":"tracing_tests::tests","spans":["first"]},
+    {"timestamp":"Jul 07 21:45:58.694","level":"ERROR","fields":{"message":"Third event","tag":"admin"},"target":"tracing_tests::tests","spans":["first"]},
+    {"timestamp":"Jul 07 21:45:58.694","level":"TRACE","fields":{"message":"closed"},"target":"tracing_tests::tests","spans":["first"]},
+    {"timestamp":"Jul 07 21:45:58.187","level":"TRACE","fields":{"message":"opened"},"target":"tracing_tests::tests","spans":["second"]},
+    {"timestamp":"Jul 07 21:45:58.444","level":"INFO","fields":{"message":"Second event"},"target":"tracing_tests::tests","spans":["second"]},
+    {"timestamp":"Jul 07 21:45:58.947","level":"INFO","fields":{"message":"Fourth event"},"target":"tracing_tests::tests","spans":["second"]},
+    {"timestamp":"Jul 07 21:45:58.947","level":"TRACE","fields":{"message":"closed","time.busy":"263µs","time.idle":"759ms"},"target":"tracing_tests::tests","spans":["second"]}
 ]
