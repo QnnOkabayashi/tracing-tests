@@ -64,6 +64,12 @@ mod tests {
             .finish();
 
         let _custom_subscriber = MySubscriber::pretty();
+        // TODO: configurations to implement:
+        // JSON / Pretty
+        // output, needs to use a MakeWriter
+        // span events
+        // the max level is locked to trace, so spans should choose what their own max level is.
+        // all this will probably need to be on a `SubscriberBuilder` type.
 
         // select which one to try!
         // let subscriber = _default_subscriber;
