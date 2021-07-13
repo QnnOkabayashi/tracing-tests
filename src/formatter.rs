@@ -1,7 +1,7 @@
 use chrono::Utc;
 use std::fmt;
 use tracing::field::{Field, Visit};
-use tracing::Event;
+use tracing::{Event, Level};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Registry;
 
@@ -49,7 +49,7 @@ impl LogFmt {
                         } else {
                             writer.write_char(',')?;
                         }
-                        write!(writer, r#"{{"name":"{}"}}"#, span.name())?;
+                        write!(writer, r#""{}""#, span.name())?;
                     }
                 }
                 writeln!(writer, "]}}")
@@ -57,9 +57,15 @@ impl LogFmt {
             Self::Pretty => {
                 write!(
                     writer,
-                    "{ts} {level:>5} ",
+                    "{ts} {level:>7} ",
                     ts = ts.format("%b %m %H:%M:%S.%3f"),
-                    level = event.metadata().level(),
+                    level = match *event.metadata().level() {
+                        Level::TRACE => "Trace 📍",
+                        Level::DEBUG => "Debug 🐛",
+                        Level::INFO => "Info 🔐",
+                        Level::WARN => "Warn 🚧",
+                        Level::ERROR => "Error 🚨",
+                    },
                 )?;
 
                 if let Some(spans) = ctx.event_scope(event) {
