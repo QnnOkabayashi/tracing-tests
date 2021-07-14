@@ -7,23 +7,13 @@ pub mod macros;
 
 #[cfg(test)]
 mod tests {
-    use crate::subscriber::MySubscriber;
+    use crate::formatter::LogFmt;
+    use crate::subscriber::{MyEvent, MySubscriber};
     use tokio;
+    use tokio::sync::mpsc::unbounded_channel as unbounded;
     use tokio::time::{sleep, Duration};
-    use tracing::{self, error, info, instrument, Level};
+    use tracing::{self, info, instrument, Level};
     use tracing_subscriber::fmt::format::FmtSpan;
-
-    #[test]
-    fn trace_test() {
-        tracing::subscriber::with_default(MySubscriber::pretty(), || {
-            tracing::trace_span!("A").in_scope(|| {
-                tracing::trace_span!("B").in_scope(|| {
-                    tracing::error!(tag = "admin", "oh no!");
-                    alarm!("oh man, it's {}", 3);
-                })
-            })
-        });
-    }
 
     #[test]
     fn tracing_subscriber_builtins() {
@@ -58,43 +48,39 @@ mod tests {
 
     #[tokio::test]
     async fn async_tests() {
-        let _default_subscriber = tracing_subscriber::fmt()
-            .with_max_level(Level::TRACE)
-            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE) // logs when `span`s are initialized or terminated
-            .finish();
+        let (log_tx, mut log_rx) = unbounded::<(LogFmt, Vec<MyEvent>)>();
 
-        let _custom_subscriber = MySubscriber::pretty();
-        // TODO: configurations to implement:
-        // JSON / Pretty
-        // output, needs to use a MakeWriter
-        // span events
-        // the max level is locked to trace, so spans should choose what their own max level is.
-        // all this will probably need to be on a `SubscriberBuilder` type.
+        tokio::spawn(async move {
+            while let Some((fmt, events)) = log_rx.recv().await {
+                eprintln!("{}", fmt.format_events(events).unwrap());
+            }
+        });
 
-        // select which one to try!
-        // let subscriber = _default_subscriber;
-        let subscriber = _custom_subscriber;
+        {
+            let subscriber = MySubscriber::new(LogFmt::Pretty, log_tx);
+            let _guard = tracing::subscriber::set_default(subscriber);
 
-        tracing::subscriber::set_global_default(subscriber).unwrap();
+            #[instrument(level = "trace")]
+            async fn first() {
+                filter_error!("First event");
+                sleep(Duration::from_millis(500)).await;
+                admin_error!("Third event");
+            }
 
-        #[instrument(level = "trace")]
-        async fn first() {
-            filter_error!("First event");
-            sleep(Duration::from_millis(500)).await;
-            admin_error!("Third event");
+            #[instrument(level = "trace", fields(timed = true))]
+            async fn second() {
+                sleep(Duration::from_millis(250)).await;
+                admin_error!("Second event");
+                sleep(Duration::from_millis(500)).await;
+                filter_error!("Fourth event");
+            }
+
+            let a = first();
+            let b = second();
+
+            tokio::join!(a, b);
         }
 
-        #[instrument(level = "trace", fields(timed = true))]
-        async fn second() {
-            sleep(Duration::from_millis(250)).await;
-            info!("Second event");
-            sleep(Duration::from_millis(500)).await;
-            info!("Fourth event");
-        }
-
-        let a = first();
-        let b = second();
-
-        tokio::join!(a, b);
+        println!("done");
     }
 }
