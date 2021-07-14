@@ -1,5 +1,5 @@
-use std::time::Instant;
 use std::fmt;
+use std::time::Instant;
 use tracing::field::{display, DisplayValue};
 
 pub struct Timings {
