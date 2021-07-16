@@ -305,9 +305,7 @@ impl MyEventOrSpan {
                 })
                 // Returns `None` if nothing comes out of the iterator, otherwise sums
                 .fold(None, |sum, d| Some(d + sum.unwrap_or(0.0)))
-                .map(|nested_duration| {
-                    100.0 * (duration - nested_duration) / root_duration
-                });
+                .map(|nested_duration| 100.0 * (duration - nested_duration) / root_duration);
 
             let total_load = 100.0 * (duration / root_duration);
 

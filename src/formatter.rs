@@ -126,9 +126,16 @@ pub fn format_pretty(processed_logs: MyProcessedEventOrSpan) -> String {
                     write!(writer, "{}", fill)?;
                 }
 
-                write!(writer, "{} [ {} | ", span.name, DurationDisplay(span.duration))?;
+                write!(
+                    writer,
+                    "{} [ {} | ",
+                    span.name,
+                    DurationDisplay(span.duration)
+                )?;
 
-                span.direct_load.map(|direct_load| write!(writer, "{:.3}% / ", direct_load));
+                if let Some(direct_load) = span.direct_load {
+                    write!(writer, "{:.3}% / ", direct_load)?;
+                }
 
                 writeln!(writer, "{:.3}% ]", span.total_load)?;
 

@@ -58,7 +58,6 @@ mod tests {
         println!("done");
     }
 
-
     #[tokio::test]
     async fn deep_spans() {
         let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyEventOrSpan)>();
@@ -72,9 +71,8 @@ mod tests {
                 trace_span!("server::search").in_scope(|| {
                     trace_span!("be::search").in_scope(|| {
                         trace_span!("be::search -> filter2idl").in_scope(|| {
-                            trace_span!("be::idl_arc_sqlite::get_idl").in_scope(|| {
-                                filter_info!("Some filter info...")
-                            });
+                            trace_span!("be::idl_arc_sqlite::get_idl")
+                                .in_scope(|| filter_info!("Some filter info..."));
                             trace_span!("be::idl_arc_sqlite::get_idl").in_scope(|| {
                                 admin_error!("Oopsies, an admin error occurred :)");
                                 debug!("An untagged debug log")
@@ -85,9 +83,8 @@ mod tests {
                             security_access!("A security access log")
                         })
                     });
-                    trace_span!("server::search<filter_resolve>").in_scope(|| {
-                        filter_warn!("Some filter warning lol")
-                    })
+                    trace_span!("server::search<filter_resolve>")
+                        .in_scope(|| filter_warn!("Some filter warning lol"))
                 })
             })
         });
