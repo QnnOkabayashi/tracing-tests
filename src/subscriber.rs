@@ -1,12 +1,13 @@
 use std::any::TypeId;
-use std::fmt;
-use std::io;
+use std::convert::{TryFrom, TryInto};
+use std::fmt::{self, Write as _};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use tracing::field::{self, Field, Visit};
+use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Id, Level, Metadata, Subscriber};
 use tracing_subscriber::layer::{Context, Layered, SubscriberExt};
@@ -14,7 +15,7 @@ use tracing_subscriber::registry::Registry;
 use tracing_subscriber::Layer;
 
 use crate::formatter::LogFmt;
-use crate::timings::Timings;
+use crate::timings::Timer;
 
 pub struct MySubscriber {
     inner: Layered<MyLayer, Registry>,
@@ -22,20 +23,66 @@ pub struct MySubscriber {
 
 pub struct MyLayer {
     fmt: LogFmt,
-    log_tx: UnboundedSender<(LogFmt, Vec<MyEvent>)>,
+    log_tx: UnboundedSender<(LogFmt, MyEventOrSpan)>,
 }
 
 #[derive(Debug)]
 pub struct MyEvent {
     pub timestamp: DateTime<Utc>,
+    pub message: String,
     pub level: Level,
-    pub spans: Option<Vec<&'static str>>,
-    pub target: String,
-    pub fields: Vec<(&'static str, String)>,
+    pub tag: Option<MyEventTag>,
+    pub spans: Vec<&'static str>,
+}
+
+#[derive(Debug)]
+pub struct MySpanBuf {
+    pub timestamp: DateTime<Utc>,
+    pub name: &'static str,
+    pub buf: Vec<MyEventOrSpan>,
+}
+
+#[derive(Debug)]
+pub enum MyEventOrSpan {
+    Event(MyEvent),
+    SpanBuf(MySpanBuf, Duration),
+}
+
+#[derive(Debug)]
+pub enum MyEventTag {
+    AdminError,
+    AdminWarn,
+    AdminInfo,
+    RequestError,
+    RequestWarn,
+    RequestInfo,
+    RequestTrace,
+    SecurityCritical,
+    SecurityInfo,
+    SecurityAccess,
+    FilterError,
+    FilterWarn,
+    FilterInfo,
+    FilterTrace,
+    PerfTrace,
+}
+
+pub struct MyProcessedSpan {
+    pub timestamp: DateTime<Utc>,
+    pub name: &'static str,
+    pub duration: f64,
+    pub direct_load: Option<f64>, // If the span has no child spans, this is `None`
+    pub total_load: f64,
+    pub processed_buf: Vec<MyProcessedEventOrSpan>,
+}
+
+pub enum MyProcessedEventOrSpan {
+    Event(MyEvent),
+    Span(MyProcessedSpan),
 }
 
 impl MySubscriber {
-    pub fn new(fmt: LogFmt, log_tx: UnboundedSender<(LogFmt, Vec<MyEvent>)>) -> Self {
+    pub fn new(fmt: LogFmt, log_tx: UnboundedSender<(LogFmt, MyEventOrSpan)>) -> Self {
         MySubscriber {
             inner: Registry::default().with(MyLayer { fmt, log_tx }),
         }
@@ -92,152 +139,73 @@ impl Subscriber for MySubscriber {
     }
 }
 
-impl MyLayer {
-    fn log_event(&self, event: &Event, ctx: &Context<Registry>) {
-        if let Some(span) = ctx.event_span(event) {
-            // The event is in a span, so we should log it.
-            span.extensions_mut()
-                .get_mut::<Vec<MyEvent>>()
-                .expect("Log buffer not found, this is a bug")
-                .push(MyEvent::new(event, ctx));
-        }
-    }
-}
-
-macro_rules! with_labeled_event {
-    ($id:ident, $span:ident, $message:literal, {$($field:literal: $value:expr),*}, |$event:ident| $code:block) => {
-        let meta = $span.metadata();
-        let cs = meta.callsite();
-        let fs = field::FieldSet::new(&["message",$($field),*], cs);
-        let mut iter = fs.iter();
-        let message = field::display($message);
-        let v = [
-            (&iter.next().unwrap(), Some(&message as &dyn field::Value)),
-            $(
-                (&iter.next().unwrap(), Some(&$value as &dyn field::Value)),
-            )*
-        ];
-        let vs = fs.value_set(&v);
-        let $event = Event::new_child_of($id, meta, &vs);
-        $code
-    };
-}
-
 impl Layer<Registry> for MyLayer {
     fn new_span(&self, attrs: &Attributes, id: &Id, ctx: Context<Registry>) {
         let span = ctx.span(id).expect("Span not found, this is a bug");
 
-        let timed = {
-            struct Visitor {
-                timed: bool, // add other attrs we care about here...
-            }
-
-            impl Visit for Visitor {
-                fn record_bool(&mut self, field: &Field, value: bool) {
-                    if field.name() == "timed" {
-                        self.timed = value;
-                    }
-                }
-
-                fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
-            }
-
-            let mut visitor = Visitor { timed: false };
-            attrs.record(&mut visitor);
-            visitor.timed
-        };
+        let name = attrs.metadata().name();
 
         let mut extensions = span.extensions_mut();
 
-        if timed && extensions.get_mut::<Timings>().is_none() {
-            extensions.insert(Timings::new());
-        }
-
-        if extensions.get_mut::<Vec<MyEvent>>().is_none() {
-            // arbitrarily chosen values, I'm open to feedback
-            let capacity = match *attrs.metadata().level() {
-                Level::TRACE => 512,
-                Level::DEBUG => 256,
-                Level::INFO => 128,
-                Level::WARN => 32,
-                Level::ERROR => 8,
-            };
-
-            extensions.insert(Vec::<MyEvent>::with_capacity(capacity));
-        }
-
-        // TODO: maybe add `FmtSpan` flags to choose which of these we want
-        with_labeled_event!(id, span, "[opened]", {}, |event| {
-            drop(extensions);
-            self.log_event(&event, &ctx);
-        });
+        extensions.insert(MySpanBuf::new(name));
+        extensions.insert(Timer::new());
     }
 
     fn on_event(&self, event: &Event, ctx: Context<Registry>) {
-        self.log_event(event, &ctx)
+        if let Some(span) = ctx.event_span(event) {
+            // The event is in a span, so we should log it.
+            span.extensions_mut()
+                .get_mut::<MySpanBuf>()
+                .expect("Log buffer not found, this is a bug")
+                .log_event(MyEvent::new(event, &ctx));
+        }
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<Registry>) {
-        let span = ctx.span(id).expect("Span not found, this is a bug");
-
-        let mut extensions = span.extensions_mut();
-
-        if let Some(timings) = extensions.get_mut::<Timings>() {
-            timings.now_busy();
-        }
+        ctx.span(id)
+            .expect("Span not found, this is a bug")
+            .extensions_mut()
+            .get_mut::<Timer>()
+            .expect("Timer not found, this is a bug")
+            .unpause();
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<Registry>) {
-        let span = ctx.span(id).expect("Span not found, this is a bug");
-
-        let mut extensions = span.extensions_mut();
-
-        if let Some(timings) = extensions.get_mut::<Timings>() {
-            timings.now_idle();
-        }
+        ctx.span(id)
+            .expect("Span not found, this is a bug")
+            .extensions_mut()
+            .get_mut::<Timer>()
+            .expect("Timer not found, this is a bug")
+            .pause();
     }
 
     fn on_close(&self, id: Id, ctx: Context<Registry>) {
         let span = ctx.span(&id).expect("Span not found, this is a bug");
 
         let mut extensions = span.extensions_mut();
-        // `tracing_subscriber` also just calls the macro twice,
-        // so at least this isn't worse than that.
-        if let Some(timings) = extensions.remove::<Timings>() {
-            let busy = timings.display_busy();
-            let idle = timings.display_idle();
-            with_labeled_event!(id, span, "[closed]", { "time.busy": busy, "time.idle": idle }, |event| {
-                drop(extensions);
-                self.log_event(&event, &ctx);
-            });
-        } else {
-            with_labeled_event!(id, span, "[closed]", {}, |event| {
-                drop(extensions);
-                self.log_event(&event, &ctx);
-            });
-        }
 
-        let mut extensions = span.extensions_mut();
+        let span_buf = extensions
+            .remove::<MySpanBuf>()
+            .expect("Span buffer not found, this is a bug");
 
-        let event_buffer = extensions
-            .remove::<Vec<MyEvent>>()
-            .expect("Log buffer not found, this is a bug");
+        let duration = extensions
+            .remove::<Timer>()
+            .expect("Timer not found, this is a bug")
+            .duration();
 
         match span.parent() {
             Some(parent) => {
                 parent
                     .extensions_mut()
-                    .get_mut::<Vec<MyEvent>>()
-                    .expect("Log buffer not found, this is a bug")
-                    .extend(event_buffer);
+                    .get_mut::<MySpanBuf>()
+                    .expect("Span buffer not found, this is a bug")
+                    .log_span(span_buf, duration);
             }
             None => {
+                // TODO: fix writing
                 self.log_tx
-                    .send((self.fmt, event_buffer))
+                    .send((self.fmt, MyEventOrSpan::SpanBuf(span_buf, duration)))
                     .expect("failed to write logs");
-                // let logs = self.fmt.format_events(event_buffer).expect("Write failed");
-
-                // eprint!("{}", logs);
             }
         }
     }
@@ -249,53 +217,159 @@ impl MyEvent {
         let level = *event.metadata().level();
         let spans = ctx
             .event_scope(event)
-            .map(|scope| scope.map(|span| span.name()).collect());
-        let target = event.metadata().target().to_string();
+            .map(|scope| scope.map(|span| span.name()).collect())
+            .unwrap_or_else(|| vec![]);
 
-        let mut fields = vec![];
-
-        struct Visitor<'a>(&'a mut Vec<(&'static str, String)>);
+        struct Visitor<'a>(&'a mut String, &'a mut Option<MyEventTag>);
 
         impl<'a> Visit for Visitor<'a> {
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                if field.name() == "event_tag" {
+                    if let Ok(tag) = value.try_into() {
+                        *self.1 = Some(tag);
+                    }
+                }
+            }
+
             fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-                self.0.push((field.name(), format!("{:?}", value)));
+                if field.name() == "message" {
+                    write!(self.0, "{:?}", value).expect("Write failed");
+                } else {
+                    todo!("Fields other than \"message\"")
+                }
             }
         }
 
-        event.record(&mut Visitor(&mut fields));
+        let mut message = String::new();
+        let mut tag = None;
+
+        event.record(&mut Visitor(&mut message, &mut tag));
 
         MyEvent {
             timestamp,
+            message,
             level,
+            tag,
             spans,
-            target,
-            fields,
+        }
+    }
+}
+
+impl MySpanBuf {
+    fn new(name: &'static str) -> Self {
+        MySpanBuf {
+            timestamp: Utc::now(),
+            name,
+            buf: vec![],
         }
     }
 
-    pub(crate) fn format_size(&self, value_pad: usize, span_pad: usize) -> usize {
-        let span_size = self
-            .spans
-            .as_ref()
-            .map(|v| {
-                // length of span name + padding by formatter
-                v.iter().map(|span| span.len() + span_pad).sum::<usize>()
+    fn log_event(&mut self, event: MyEvent) {
+        self.buf.push(MyEventOrSpan::Event(event));
+    }
+
+    fn log_span(&mut self, span: MySpanBuf, duration: Duration) {
+        self.buf.push(MyEventOrSpan::SpanBuf(span, duration));
+    }
+}
+
+impl MyEventOrSpan {
+    pub fn process(self) -> MyProcessedEventOrSpan {
+        fn process_rec(this: MyEventOrSpan, root_duration: Option<f64>) -> MyProcessedEventOrSpan {
+            let (span_buf, duration) = match this {
+                MyEventOrSpan::Event(event) => return MyProcessedEventOrSpan::Event(event),
+                MyEventOrSpan::SpanBuf(span_buf, duration) => (span_buf, duration),
+            };
+
+            let duration = duration.as_nanos() as f64;
+
+            let root_duration = root_duration.unwrap_or(duration);
+
+            let mut processed_buf = vec![];
+
+            let direct_load = span_buf
+                .buf
+                .into_iter()
+                .filter_map(|event_or_span| {
+                    let processed = process_rec(event_or_span, Some(root_duration));
+
+                    let duration = match &processed {
+                        MyProcessedEventOrSpan::Span(span) => Some(span.duration),
+                        _ => None,
+                    };
+
+                    // Side effect: Push processed logs to processed_buf
+                    processed_buf.push(processed);
+
+                    duration
+                })
+                // Returns `None` if nothing comes out of the iterator, otherwise sums
+                .fold(None, |sum, d| Some(d + sum.unwrap_or(0.0)))
+                .map(|nested_duration| {
+                    100.0 * (duration - nested_duration) / root_duration
+                });
+
+            let total_load = 100.0 * (duration / root_duration);
+
+            MyProcessedEventOrSpan::Span(MyProcessedSpan {
+                timestamp: span_buf.timestamp,
+                name: span_buf.name,
+                duration,
+                direct_load,
+                total_load,
+                processed_buf,
             })
-            .unwrap_or(0);
+        }
 
-        let fields_size = self
-            .fields
-            .iter()
-            .map(|(field, value)| {
-                // length of field-value pair + padding by formatter
-                field.len() + value.len() + value_pad
-            })
-            // length of "message" is accounted for in formatters already
-            .sum::<usize>()
-            - "message".len();
+        process_rec(self, None)
+    }
+}
 
-        let target_size = self.target.len();
+impl From<MyEventTag> for u64 {
+    fn from(tag: MyEventTag) -> Self {
+        use MyEventTag::*;
+        match tag {
+            AdminError => 0,
+            AdminWarn => 1,
+            AdminInfo => 2,
+            RequestError => 3,
+            RequestWarn => 4,
+            RequestInfo => 5,
+            RequestTrace => 6,
+            SecurityCritical => 7,
+            SecurityInfo => 8,
+            SecurityAccess => 9,
+            FilterError => 10,
+            FilterWarn => 11,
+            FilterInfo => 12,
+            FilterTrace => 13,
+            PerfTrace => 14,
+        }
+    }
+}
 
-        span_size + fields_size + target_size
+impl TryFrom<u64> for MyEventTag {
+    type Error = ();
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        use MyEventTag::*;
+        Ok(match value {
+            0 => AdminError,
+            1 => AdminWarn,
+            2 => AdminInfo,
+            3 => RequestError,
+            4 => RequestWarn,
+            5 => RequestInfo,
+            6 => RequestTrace,
+            7 => SecurityCritical,
+            8 => SecurityInfo,
+            9 => SecurityAccess,
+            10 => FilterError,
+            11 => FilterWarn,
+            12 => FilterInfo,
+            13 => FilterTrace,
+            14 => PerfTrace,
+            _ => return Err(()),
+        })
     }
 }

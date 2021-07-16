@@ -10,84 +10,85 @@ macro_rules! alarm {
     }};
 }
 
+#[allow(unused_macros)]
 macro_rules! tagged_event {
-    ($logtag:literal, $event:ident, $($arg:tt)*) => {{
+    ($logtag:ident, $event:ident, $($arg:tt)*) => {{
         use tracing;
-        tracing::$event!(tag = tracing::field::display($logtag), $($arg)*)
+        tracing::$event!(event_tag = u64::from(crate::subscriber::MyEventTag::$logtag), $($arg)*)
     }}
 }
 
 #[macro_export]
 macro_rules! admin_error {
-    ($($arg:tt)*) => { tagged_event!("admin", error, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(AdminError, error, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! admin_warn {
-    ($($arg:tt)*) => { tagged_event!("admin", warn, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(AdminWarn, warn, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! admin_info {
-    ($($arg:tt)*) => { tagged_event!("admin", info, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(AdminInfo, info, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! request_error {
-    ($($arg:tt)*) => { tagged_event!("request", error, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(RequestError, error, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! request_warn {
-    ($($arg:tt)*) => { tagged_event!("admin", warn, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(RequestWarn, warn, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! request_info {
-    ($($arg:tt)*) => { tagged_event!("request", info, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(RequestInfo, info, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! request_trace {
-    ($($arg:tt)*) => { tagged_event!("request", trace, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(RequestTrace, trace, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! security_critical {
-    ($($arg:tt)*) => { tagged_event!("security", error, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(SecurityCritical, error, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! security_info {
-    ($($arg:tt)*) => { tagged_event!("security", info, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(SecurityInfo, info, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! security_access {
-    ($($arg:tt)*) => { tagged_event!("security", trace, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(SecurityAccess, info, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! filter_error {
-    ($($arg:tt)*) => { tagged_event!("filter", error, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(FilterError, error, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! filter_warn {
-    ($($arg:tt)*) => { tagged_event!("filter", warn, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(FilterWarn, warn, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! filter_info {
-    ($($arg:tt)*) => { tagged_event!("filter", info, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(FilterInfo, info, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! filter_trace {
-    ($($arg:tt)*) => { tagged_event!("filter", trace, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(FilterTrace, trace, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! perf_trace {
-    ($($arg:tt)*) => { tagged_event!("filter", trace, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(PerfTrace, trace, $($arg)*) }
 }
