@@ -23,7 +23,7 @@ pub struct MySubscriber {
 
 pub struct MyLayer {
     fmt: LogFmt,
-    log_tx: UnboundedSender<(LogFmt, MyEventOrSpan)>,
+    log_tx: UnboundedSender<(LogFmt, MyLogs)>,
 }
 
 #[derive(Debug)]
@@ -33,17 +33,18 @@ pub struct MyEvent {
     pub level: Level,
     pub tag: Option<MyEventTag>,
     pub spans: Vec<&'static str>,
+    pub values: Vec<(&'static str, String)>,
 }
 
 #[derive(Debug)]
 pub struct MySpanBuf {
     pub timestamp: DateTime<Utc>,
     pub name: &'static str,
-    pub buf: Vec<MyEventOrSpan>,
+    pub buf: Vec<MyLogs>,
 }
 
 #[derive(Debug)]
-pub enum MyEventOrSpan {
+pub enum MyLogs {
     Event(MyEvent),
     SpanBuf(MySpanBuf, Duration),
 }
@@ -73,16 +74,16 @@ pub struct MyProcessedSpan {
     pub duration: f64,
     pub direct_load: Option<f64>, // If the span has no child spans, this is `None`
     pub total_load: f64,
-    pub processed_buf: Vec<MyProcessedEventOrSpan>,
+    pub processed_buf: Vec<MyProcessedLogs>,
 }
 
-pub enum MyProcessedEventOrSpan {
+pub enum MyProcessedLogs {
     Event(MyEvent),
     Span(MyProcessedSpan),
 }
 
 impl MySubscriber {
-    pub fn new(fmt: LogFmt, log_tx: UnboundedSender<(LogFmt, MyEventOrSpan)>) -> Self {
+    pub fn new(fmt: LogFmt, log_tx: UnboundedSender<(LogFmt, MyLogs)>) -> Self {
         MySubscriber {
             inner: Registry::default().with(MyLayer { fmt, log_tx }),
         }
@@ -204,7 +205,7 @@ impl Layer<Registry> for MyLayer {
             None => {
                 // TODO: fix writing
                 self.log_tx
-                    .send((self.fmt, MyEventOrSpan::SpanBuf(span_buf, duration)))
+                    .send((self.fmt, MyLogs::SpanBuf(span_buf, duration)))
                     .expect("failed to write logs");
             }
         }
@@ -220,7 +221,11 @@ impl MyEvent {
             .map(|scope| scope.map(|span| span.name()).collect())
             .unwrap_or_else(|| vec![]);
 
-        struct Visitor<'a>(&'a mut String, &'a mut Option<MyEventTag>);
+        struct Visitor<'a>(
+            &'a mut String,
+            &'a mut Option<MyEventTag>,
+            &'a mut Vec<(&'static str, String)>,
+        );
 
         impl<'a> Visit for Visitor<'a> {
             fn record_u64(&mut self, field: &Field, value: u64) {
@@ -235,15 +240,16 @@ impl MyEvent {
                 if field.name() == "message" {
                     write!(self.0, "{:?}", value).expect("Write failed");
                 } else {
-                    todo!("Fields other than \"message\"")
+                    self.2.push((field.name(), format!("{:?}", value)));
                 }
             }
         }
 
         let mut message = String::new();
         let mut tag = None;
+        let mut values = vec![];
 
-        event.record(&mut Visitor(&mut message, &mut tag));
+        event.record(&mut Visitor(&mut message, &mut tag, &mut values));
 
         MyEvent {
             timestamp,
@@ -251,6 +257,7 @@ impl MyEvent {
             level,
             tag,
             spans,
+            values,
         }
     }
 }
@@ -265,20 +272,20 @@ impl MySpanBuf {
     }
 
     fn log_event(&mut self, event: MyEvent) {
-        self.buf.push(MyEventOrSpan::Event(event));
+        self.buf.push(MyLogs::Event(event));
     }
 
     fn log_span(&mut self, span: MySpanBuf, duration: Duration) {
-        self.buf.push(MyEventOrSpan::SpanBuf(span, duration));
+        self.buf.push(MyLogs::SpanBuf(span, duration));
     }
 }
 
-impl MyEventOrSpan {
-    pub fn process(self) -> MyProcessedEventOrSpan {
-        fn process_rec(this: MyEventOrSpan, root_duration: Option<f64>) -> MyProcessedEventOrSpan {
-            let (span_buf, duration) = match this {
-                MyEventOrSpan::Event(event) => return MyProcessedEventOrSpan::Event(event),
-                MyEventOrSpan::SpanBuf(span_buf, duration) => (span_buf, duration),
+impl MyLogs {
+    pub fn process(self) -> MyProcessedLogs {
+        fn process_rec(logs: MyLogs, root_duration: Option<f64>) -> MyProcessedLogs {
+            let (span_buf, duration) = match logs {
+                MyLogs::Event(event) => return MyProcessedLogs::Event(event),
+                MyLogs::SpanBuf(span_buf, duration) => (span_buf, duration),
             };
 
             let duration = duration.as_nanos() as f64;
@@ -290,11 +297,11 @@ impl MyEventOrSpan {
             let direct_load = span_buf
                 .buf
                 .into_iter()
-                .filter_map(|event_or_span| {
-                    let processed = process_rec(event_or_span, Some(root_duration));
+                .filter_map(|logs| {
+                    let processed = process_rec(logs, Some(root_duration));
 
-                    let duration = match &processed {
-                        MyProcessedEventOrSpan::Span(span) => Some(span.duration),
+                    let duration = match processed {
+                        MyProcessedLogs::Span(ref span) => Some(span.duration),
                         _ => None,
                     };
 
@@ -309,7 +316,7 @@ impl MyEventOrSpan {
 
             let total_load = 100.0 * (duration / root_duration);
 
-            MyProcessedEventOrSpan::Span(MyProcessedSpan {
+            MyProcessedLogs::Span(MyProcessedSpan {
                 timestamp: span_buf.timestamp,
                 name: span_buf.name,
                 duration,

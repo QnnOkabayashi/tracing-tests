@@ -8,15 +8,15 @@ pub mod macros;
 #[cfg(test)]
 mod tests {
     use crate::formatter::LogFmt;
-    use crate::subscriber::{MyEventOrSpan, MySubscriber};
+    use crate::subscriber::{MyLogs, MySubscriber};
     use tokio;
     use tokio::sync::mpsc::unbounded_channel as unbounded;
     use tokio::time::{sleep, Duration};
-    use tracing::{self, debug, instrument, trace_span};
+    use tracing::{self, debug, instrument, trace, trace_span};
 
     #[tokio::test]
     async fn async_tests() {
-        let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyEventOrSpan)>();
+        let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyLogs)>();
 
         let subscriber = MySubscriber::new(LogFmt::Pretty, log_tx);
         let guard = tracing::subscriber::set_default(subscriber);
@@ -60,7 +60,7 @@ mod tests {
 
     #[tokio::test]
     async fn deep_spans() {
-        let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyEventOrSpan)>();
+        let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyLogs)>();
 
         let subscriber = MySubscriber::new(LogFmt::Pretty, log_tx);
         let guard = tracing::subscriber::set_default(subscriber);
@@ -86,7 +86,8 @@ mod tests {
                     trace_span!("server::search<filter_resolve>")
                         .in_scope(|| filter_warn!("Some filter warning lol"))
                 })
-            })
+            });
+            trace!("We finished!")
         });
 
         // drop so all the senders are gone
