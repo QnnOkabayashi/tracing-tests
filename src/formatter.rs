@@ -1,4 +1,4 @@
-use crate::subscriber::MyProcessedEventOrSpan;
+use crate::subscriber::MyProcessedLogs;
 use tracing::Level;
 
 use std::fmt::{self, Write as _};
@@ -29,16 +29,11 @@ impl fmt::Display for Fill {
     }
 }
 
-use Fill::*;
-
-pub fn format_pretty(processed_logs: MyProcessedEventOrSpan) -> String {
-    fn fmt_rec(
-        tree: &MyProcessedEventOrSpan,
-        indent: &mut Vec<Fill>,
-        writer: &mut String,
-    ) -> fmt::Result {
+pub fn format_pretty(processed_logs: MyProcessedLogs) -> String {
+    fn fmt_rec(tree: &MyProcessedLogs, indent: &mut Vec<Fill>, writer: &mut String) -> fmt::Result {
+        use Fill::*;
         match tree {
-            MyProcessedEventOrSpan::Event(event) => {
+            MyProcessedLogs::Event(event) => {
                 use crate::subscriber::MyEventTag::*;
 
                 const ERROR: &str = "🚨 ERROR";
@@ -90,15 +85,21 @@ pub fn format_pretty(processed_logs: MyProcessedEventOrSpan) -> String {
                     })
                     .unwrap_or("");
 
-                write!(writer, "{} {:<11} ", timestamp_fmt, level_fmt)?;
+                write!(writer, "{} {:<10} ", timestamp_fmt, level_fmt)?;
 
-                indent
-                    .iter()
-                    .try_for_each(|fill| write!(writer, "{}", fill))?;
+                for fill in indent.iter() {
+                    write!(writer, "{}", fill)?;
+                }
 
-                writeln!(writer, "[{}]: {}", tag_fmt, event.message)
+                write!(writer, "[{}]: {}", tag_fmt, event.message)?;
+
+                for (field, value) in event.values.iter() {
+                    write!(writer, " | {}: {}", field, value)?;
+                }
+
+                writeln!(writer)
             }
-            MyProcessedEventOrSpan::Span(span) => {
+            MyProcessedLogs::Span(span) => {
                 let timestamp_fmt = span.timestamp.format("%b %m %H:%M:%S.%3f");
 
                 struct DurationDisplay(f64);
@@ -120,7 +121,7 @@ pub fn format_pretty(processed_logs: MyProcessedEventOrSpan) -> String {
                     }
                 }
 
-                write!(writer, "{} 📍 SPAN      ", timestamp_fmt)?;
+                write!(writer, "{} 📍 SPAN     ", timestamp_fmt)?;
 
                 for fill in indent.iter() {
                     write!(writer, "{}", fill)?;
