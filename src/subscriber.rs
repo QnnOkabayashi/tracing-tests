@@ -4,15 +4,14 @@ use std::fmt::{self, Write as _};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-
 use tokio::sync::mpsc::UnboundedSender;
-
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Id, Level, Metadata, Subscriber};
 use tracing_subscriber::layer::{Context, Layered, SubscriberExt};
-use tracing_subscriber::registry::Registry;
+use tracing_subscriber::registry::{Registry, SpanRef};
 use tracing_subscriber::Layer;
+use uuid::Uuid;
 
 use crate::formatter::LogFmt;
 use crate::timings::Timer;
@@ -41,6 +40,7 @@ pub struct MySpanBuf {
     pub timestamp: DateTime<Utc>,
     pub name: &'static str,
     pub buf: Vec<MyLogs>,
+    pub uuid: Option<String>, // Must convert to `fmt::Debug` object to pass field boundry
 }
 
 #[derive(Debug)]
@@ -75,6 +75,7 @@ pub struct MyProcessedSpan {
     pub direct_load: Option<f64>, // If the span has no child spans, this is `None`
     pub total_load: f64,
     pub processed_buf: Vec<MyProcessedLogs>,
+    pub uuid: Option<String>,
 }
 
 pub enum MyProcessedLogs {
@@ -140,26 +141,57 @@ impl Subscriber for MySubscriber {
     }
 }
 
+impl MyLayer {
+    fn log_to_parent<'a>(&self, logs: MyLogs, parent: Option<SpanRef<'a, Registry>>) {
+        match parent {
+            // The parent exists- write to them
+            Some(span) => span
+                .extensions_mut()
+                .get_mut::<MySpanBuf>()
+                .expect("Log buffer not found, this is a bug")
+                .log(logs),
+            // The parent doesn't exist- send to formatter
+            None => self
+                .log_tx
+                .send((self.fmt, logs))
+                .expect("Failed to write logs"),
+        }
+    }
+}
+
 impl Layer<Registry> for MyLayer {
     fn new_span(&self, attrs: &Attributes, id: &Id, ctx: Context<Registry>) {
         let span = ctx.span(id).expect("Span not found, this is a bug");
 
         let name = attrs.metadata().name();
 
+        let mut uuid = None;
+
+        attrs.record(&mut |field: &Field, value: &dyn fmt::Debug| {
+            if field.name() == "uuid" {
+                let mut buf = String::with_capacity(36);
+                write!(&mut buf, "{:?}", value).expect("Write failed");
+                uuid = Some(buf);
+            }
+        });
+
+        // Take provided ID, or make a fresh one if there's no parent span.
+        let uuid = uuid.or_else(|| {
+            ctx.lookup_current()
+                .is_none()
+                .then(|| Uuid::new_v4().to_string())
+        });
+
         let mut extensions = span.extensions_mut();
 
-        extensions.insert(MySpanBuf::new(name));
+        extensions.insert(MySpanBuf::new(name, uuid));
         extensions.insert(Timer::new());
     }
 
     fn on_event(&self, event: &Event, ctx: Context<Registry>) {
-        if let Some(span) = ctx.event_span(event) {
-            // The event is in a span, so we should log it.
-            span.extensions_mut()
-                .get_mut::<MySpanBuf>()
-                .expect("Log buffer not found, this is a bug")
-                .log_event(MyEvent::new(event, &ctx));
-        }
+        let logs = MyLogs::event(event, &ctx);
+
+        self.log_to_parent(logs, ctx.event_span(event));
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<Registry>) {
@@ -194,26 +226,29 @@ impl Layer<Registry> for MyLayer {
             .expect("Timer not found, this is a bug")
             .duration();
 
-        match span.parent() {
-            Some(parent) => {
-                parent
-                    .extensions_mut()
-                    .get_mut::<MySpanBuf>()
-                    .expect("Span buffer not found, this is a bug")
-                    .log_span(span_buf, duration);
-            }
-            None => {
-                // TODO: fix writing
-                self.log_tx
-                    .send((self.fmt, MyLogs::SpanBuf(span_buf, duration)))
-                    .expect("failed to write logs");
-            }
-        }
+        let logs = MyLogs::SpanBuf(span_buf, duration);
+
+        self.log_to_parent(logs, span.parent());
     }
 }
 
-impl MyEvent {
-    fn new(event: &Event, ctx: &Context<Registry>) -> Self {
+impl MySpanBuf {
+    fn new(name: &'static str, uuid: Option<String>) -> Self {
+        MySpanBuf {
+            timestamp: Utc::now(),
+            name,
+            buf: vec![],
+            uuid,
+        }
+    }
+
+    fn log(&mut self, logs: MyLogs) {
+        self.buf.push(logs)
+    }
+}
+
+impl MyLogs {
+    fn event(event: &Event, ctx: &Context<Registry>) -> Self {
         let timestamp = Utc::now();
         let level = *event.metadata().level();
         let spans = ctx
@@ -230,14 +265,16 @@ impl MyEvent {
         impl<'a> Visit for Visitor<'a> {
             fn record_u64(&mut self, field: &Field, value: u64) {
                 if field.name() == "event_tag" {
-                    if let Ok(tag) = value.try_into() {
-                        *self.1 = Some(tag);
-                    }
+                    let tag = value
+                        .try_into()
+                        .expect(&format!("Invalid `event_tag`: {}", value));
+                    *self.1 = Some(tag);
                 }
             }
 
             fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
                 if field.name() == "message" {
+                    use fmt::Write;
                     write!(self.0, "{:?}", value).expect("Write failed");
                 } else {
                     self.2.push((field.name(), format!("{:?}", value)));
@@ -251,36 +288,16 @@ impl MyEvent {
 
         event.record(&mut Visitor(&mut message, &mut tag, &mut values));
 
-        MyEvent {
+        MyLogs::Event(MyEvent {
             timestamp,
             message,
             level,
             tag,
             spans,
             values,
-        }
-    }
-}
-
-impl MySpanBuf {
-    fn new(name: &'static str) -> Self {
-        MySpanBuf {
-            timestamp: Utc::now(),
-            name,
-            buf: vec![],
-        }
+        })
     }
 
-    fn log_event(&mut self, event: MyEvent) {
-        self.buf.push(MyLogs::Event(event));
-    }
-
-    fn log_span(&mut self, span: MySpanBuf, duration: Duration) {
-        self.buf.push(MyLogs::SpanBuf(span, duration));
-    }
-}
-
-impl MyLogs {
     pub fn process(self) -> MyProcessedLogs {
         fn process_rec(logs: MyLogs, root_duration: Option<f64>) -> MyProcessedLogs {
             let (span_buf, duration) = match logs {
@@ -311,7 +328,10 @@ impl MyLogs {
                     duration
                 })
                 // Returns `None` if nothing comes out of the iterator, otherwise sums
-                .fold(None, |sum, d| Some(d + sum.unwrap_or(0.0)))
+                .fold(None, |sum_opt, child_duration| {
+                    let sum = sum_opt.unwrap_or(0.0);
+                    Some(sum + child_duration)
+                })
                 .map(|nested_duration| 100.0 * (duration - nested_duration) / root_duration);
 
             let total_load = 100.0 * (duration / root_duration);
@@ -323,6 +343,7 @@ impl MyLogs {
                 direct_load,
                 total_load,
                 processed_buf,
+                uuid: span_buf.uuid,
             })
         }
 
@@ -330,6 +351,9 @@ impl MyLogs {
     }
 }
 
+// The purpose of these functions is to allow us to pass a `MyEventTag` through the fields key-value barrier,
+// where `record` only allows, `i64`, `u64`, `bool`, `&str`, and `dyn fmt::Debug` values.
+// We use `u64` because it's faster than `&str`, and would take the same space to transform.
 impl From<MyEventTag> for u64 {
     fn from(tag: MyEventTag) -> Self {
         use MyEventTag::*;

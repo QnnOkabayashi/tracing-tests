@@ -12,7 +12,8 @@ mod tests {
     use tokio;
     use tokio::sync::mpsc::unbounded_channel as unbounded;
     use tokio::time::{sleep, Duration};
-    use tracing::{self, debug, instrument, trace, trace_span};
+    use tracing::{self, debug, info, instrument, trace, trace_span};
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn async_tests() {
@@ -21,14 +22,14 @@ mod tests {
         let subscriber = MySubscriber::new(LogFmt::Pretty, log_tx);
         let guard = tracing::subscriber::set_default(subscriber);
 
-        #[instrument(level = "trace")]
-        async fn first() {
+        #[instrument]
+        async fn first(uuid: Uuid) {
             filter_error!("First event");
             sleep(Duration::from_millis(500)).await;
             admin_error!("Third event");
         }
 
-        #[instrument(level = "trace", fields(timed = true))]
+        #[instrument]
         async fn second() {
             sleep(Duration::from_millis(250)).await;
             admin_error!("Second event");
@@ -36,7 +37,11 @@ mod tests {
             filter_error!("Fourth event");
         }
 
-        let a = first();
+        let uuid = Uuid::new_v4();
+
+        info!("Going to use this UUID: {}", uuid);
+
+        let a = first(uuid);
         let b = second();
 
         tokio::join!(a, b);
@@ -54,8 +59,6 @@ mod tests {
                 }
             }
         }
-
-        println!("done");
     }
 
     #[tokio::test]

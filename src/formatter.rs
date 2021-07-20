@@ -30,37 +30,46 @@ impl fmt::Display for Fill {
 }
 
 pub fn format_pretty(processed_logs: MyProcessedLogs) -> String {
-    fn fmt_rec(tree: &MyProcessedLogs, indent: &mut Vec<Fill>, writer: &mut String) -> fmt::Result {
+    fn fmt_rec(
+        tree: &MyProcessedLogs,
+        indent: &mut Vec<Fill>,
+        uuid: Option<&str>,
+        writer: &mut String,
+    ) -> fmt::Result {
         use Fill::*;
         match tree {
             MyProcessedLogs::Event(event) => {
                 use crate::subscriber::MyEventTag::*;
 
-                const ERROR: &str = "🚨 ERROR";
-                const WARN: &str = "🚧 WARN";
-                const INFO: &str = "💬 INFO";
-                const DEBUG: &str = "🐛 DEBUG";
-                const TRACE: &str = "📌 TRACE";
+                const ERROR_EMOJI: &str = "🚨";
+                const WARN_EMOJI: &str = "🚧";
+                const INFO_EMOJI: &str = "💬";
+                const DEBUG_EMOJI: &str = "🐛";
+                const TRACE_EMOJI: &str = "📍";
 
-                let timestamp_fmt = event.timestamp.format("%b %m %H:%M:%S.%3f");
+                let uuid = uuid.unwrap_or("00000000-0000-0000-0000-000000000000");
 
-                let level_fmt = event
+                let timestamp_fmt = event.timestamp.to_rfc3339();
+
+                // level, emoji, tag
+
+                let emoji = event
                     .tag
                     .as_ref()
                     .map(|tag| match tag {
-                        AdminError | RequestError | FilterError => ERROR,
-                        AdminWarn | RequestWarn | FilterWarn => WARN,
-                        AdminInfo | RequestInfo | SecurityInfo | FilterInfo => INFO,
-                        RequestTrace | FilterTrace | PerfTrace => TRACE,
-                        SecurityCritical => "🔐 CRITICAL",
-                        SecurityAccess => "🔓 ACCESS",
+                        AdminError | RequestError | FilterError => ERROR_EMOJI,
+                        AdminWarn | RequestWarn | FilterWarn => WARN_EMOJI,
+                        AdminInfo | RequestInfo | SecurityInfo | FilterInfo => INFO_EMOJI,
+                        RequestTrace | FilterTrace | PerfTrace => TRACE_EMOJI,
+                        SecurityCritical => "🔐",
+                        SecurityAccess => "🔓",
                     })
                     .unwrap_or_else(|| match event.level {
-                        Level::ERROR => ERROR,
-                        Level::WARN => WARN,
-                        Level::INFO => INFO,
-                        Level::DEBUG => DEBUG,
-                        Level::TRACE => TRACE,
+                        Level::ERROR => ERROR_EMOJI,
+                        Level::WARN => WARN_EMOJI,
+                        Level::INFO => INFO_EMOJI,
+                        Level::DEBUG => DEBUG_EMOJI,
+                        Level::TRACE => TRACE_EMOJI,
                     });
 
                 let tag_fmt = event
@@ -83,15 +92,21 @@ pub fn format_pretty(processed_logs: MyProcessedLogs) -> String {
                         FilterTrace => "filter.trace",
                         PerfTrace => "perf.trace",
                     })
-                    .unwrap_or("");
+                    .unwrap_or_else(|| match event.level {
+                        Level::ERROR => "_.error",
+                        Level::WARN => "_.warn",
+                        Level::INFO => "_.info",
+                        Level::DEBUG => "_.debug",
+                        Level::TRACE => "_.trace",
+                    });
 
-                write!(writer, "{} {:<10} ", timestamp_fmt, level_fmt)?;
+                write!(writer, "{} {} {:<8} ", uuid, timestamp_fmt, event.level)?;
 
                 for fill in indent.iter() {
                     write!(writer, "{}", fill)?;
                 }
 
-                write!(writer, "[{}]: {}", tag_fmt, event.message)?;
+                write!(writer, "{} [{}]: {}", emoji, tag_fmt, event.message)?;
 
                 for (field, value) in event.values.iter() {
                     write!(writer, " | {}: {}", field, value)?;
@@ -100,7 +115,14 @@ pub fn format_pretty(processed_logs: MyProcessedLogs) -> String {
                 writeln!(writer)
             }
             MyProcessedLogs::Span(span) => {
-                let timestamp_fmt = span.timestamp.format("%b %m %H:%M:%S.%3f");
+                let uuid = span
+                    .uuid
+                    .as_ref()
+                    .map(String::as_str)
+                    .or(uuid)
+                    .expect("Span has no associated UUID, this is a bug");
+
+                let timestamp_fmt = span.timestamp.to_rfc3339();
 
                 struct DurationDisplay(f64);
 
@@ -121,7 +143,7 @@ pub fn format_pretty(processed_logs: MyProcessedLogs) -> String {
                     }
                 }
 
-                write!(writer, "{} 📍 SPAN     ", timestamp_fmt)?;
+                write!(writer, "{} {} TRACE    ", uuid, timestamp_fmt)?;
 
                 for fill in indent.iter() {
                     write!(writer, "{}", fill)?;
@@ -154,12 +176,12 @@ pub fn format_pretty(processed_logs: MyProcessedLogs) -> String {
                     for event in remaining {
                         // Reset to Fork
                         indent.last_mut().map(|fill| *fill = Fork);
-                        fmt_rec(event, indent, writer)?;
+                        fmt_rec(event, indent, Some(uuid), writer)?;
                     }
 
                     // Last child, set to Turn
                     indent.last_mut().map(|fill| *fill = Turn);
-                    fmt_rec(last, indent, writer)?;
+                    fmt_rec(last, indent, Some(uuid), writer)?;
 
                     indent.pop();
                 } else {
@@ -173,6 +195,6 @@ pub fn format_pretty(processed_logs: MyProcessedLogs) -> String {
 
     let mut writer = String::new();
     let mut indent = vec![];
-    fmt_rec(&processed_logs, &mut indent, &mut writer).expect("Write failed");
+    fmt_rec(&processed_logs, &mut indent, None, &mut writer).expect("Write failed");
     writer
 }
