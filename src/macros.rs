@@ -55,7 +55,7 @@ macro_rules! request_trace {
 
 #[macro_export]
 macro_rules! security_critical {
-    ($($arg:tt)*) => { tagged_event!(SecurityCritical, error, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(SecurityCritical, info, $($arg)*) }
 }
 
 #[macro_export]
