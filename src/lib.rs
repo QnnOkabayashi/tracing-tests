@@ -9,6 +9,7 @@ pub mod macros;
 mod tests {
     use crate::formatter::LogFmt;
     use crate::subscriber::{MyLogs, MySubscriber};
+    use std::io;
     use tokio;
     use tokio::sync::mpsc::unbounded_channel as unbounded;
     use tokio::time::{sleep, Duration};
@@ -19,7 +20,7 @@ mod tests {
     async fn async_tests() {
         let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyLogs)>();
 
-        let subscriber = MySubscriber::new(LogFmt::Pretty, log_tx);
+        let subscriber = MySubscriber::new(LogFmt::Json, log_tx);
         let guard = tracing::subscriber::set_default(subscriber);
 
         #[instrument]
@@ -50,14 +51,12 @@ mod tests {
         drop(guard);
 
         while let Some((fmt, logs)) = log_rx.recv().await {
-            match fmt {
-                LogFmt::Json => todo!(),
-                LogFmt::Pretty => {
-                    let processed_logs = logs.process();
-                    let log = crate::formatter::format_pretty(processed_logs);
-                    eprint!("{}", log);
-                }
-            }
+            let processed_logs = logs.process();
+            let formatted_logs = match fmt {
+                LogFmt::Json => crate::formatter::format_json(processed_logs),
+                LogFmt::Pretty => crate::formatter::format_pretty(processed_logs),
+            };
+            io::Write::write(&mut io::stderr(), &formatted_logs[..]).expect("Write failed");
         }
     }
 
@@ -65,7 +64,7 @@ mod tests {
     async fn deep_spans() {
         let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyLogs)>();
 
-        let subscriber = MySubscriber::new(LogFmt::Pretty, log_tx);
+        let subscriber = MySubscriber::new(LogFmt::Json, log_tx);
         let guard = tracing::subscriber::set_default(subscriber);
 
         trace_span!("try_from_entry_ro").in_scope(|| {
@@ -97,14 +96,12 @@ mod tests {
         drop(guard);
 
         while let Some((fmt, logs)) = log_rx.recv().await {
-            match fmt {
-                LogFmt::Json => todo!(),
-                LogFmt::Pretty => {
-                    let processed_logs = logs.process();
-                    let log = crate::formatter::format_pretty(processed_logs);
-                    eprint!("{}", log);
-                }
-            }
+            let processed_logs = logs.process();
+            let formatted_logs = match fmt {
+                LogFmt::Json => crate::formatter::format_json(processed_logs),
+                LogFmt::Pretty => crate::formatter::format_pretty(processed_logs),
+            };
+            io::Write::write(&mut io::stderr(), &formatted_logs[..]).expect("Write failed");
         }
 
         println!("done");

@@ -31,7 +31,6 @@ pub struct MyEvent {
     pub message: String,
     pub level: Level,
     pub tag: Option<MyEventTag>,
-    pub spans: Vec<&'static str>,
     pub values: Vec<(&'static str, String)>,
 }
 
@@ -49,7 +48,7 @@ pub enum MyLogs {
     SpanBuf(MySpanBuf, Duration),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum MyEventTag {
     AdminError,
     AdminWarn,
@@ -71,11 +70,10 @@ pub enum MyEventTag {
 pub struct MyProcessedSpan {
     pub timestamp: DateTime<Utc>,
     pub name: &'static str,
-    pub duration: f64,
-    pub direct_load: Option<f64>, // If the span has no child spans, this is `None`
-    pub total_load: f64,
     pub processed_buf: Vec<MyProcessedLogs>,
     pub uuid: Option<String>,
+    pub nested_duration: u64,
+    pub total_duration: u64,
 }
 
 pub enum MyProcessedLogs {
@@ -189,7 +187,7 @@ impl Layer<Registry> for MyLayer {
     }
 
     fn on_event(&self, event: &Event, ctx: Context<Registry>) {
-        let logs = MyLogs::event(event, &ctx);
+        let logs = MyLogs::event(event);
 
         self.log_to_parent(logs, ctx.event_span(event));
     }
@@ -248,13 +246,9 @@ impl MySpanBuf {
 }
 
 impl MyLogs {
-    fn event(event: &Event, ctx: &Context<Registry>) -> Self {
+    fn event(event: &Event) -> Self {
         let timestamp = Utc::now();
         let level = *event.metadata().level();
-        let spans = ctx
-            .event_scope(event)
-            .map(|scope| scope.map(|span| span.name()).collect())
-            .unwrap_or_else(|| vec![]);
 
         struct Visitor<'a>(
             &'a mut String,
@@ -293,61 +287,66 @@ impl MyLogs {
             message,
             level,
             tag,
-            spans,
             values,
         })
     }
 
     pub fn process(self) -> MyProcessedLogs {
-        fn process_rec(logs: MyLogs, root_duration: Option<f64>) -> MyProcessedLogs {
-            let (span_buf, duration) = match logs {
-                MyLogs::Event(event) => return MyProcessedLogs::Event(event),
-                MyLogs::SpanBuf(span_buf, duration) => (span_buf, duration),
-            };
+        match self {
+            MyLogs::Event(event) => MyProcessedLogs::Event(event),
+            MyLogs::SpanBuf(span_buf, duration) => {
+                let mut processed_buf = vec![];
 
-            let duration = duration.as_nanos() as f64;
+                let nested_duration = span_buf
+                    .buf
+                    .into_iter()
+                    .map(|logs| {
+                        let processed = logs.process();
 
-            let root_duration = root_duration.unwrap_or(duration);
+                        let duration = match processed {
+                            MyProcessedLogs::Span(ref span) => span.total_duration,
+                            _ => 0,
+                        };
 
-            let mut processed_buf = vec![];
+                        // Side effect: Push processed logs to processed_buf
+                        processed_buf.push(processed);
 
-            let direct_load = span_buf
-                .buf
-                .into_iter()
-                .filter_map(|logs| {
-                    let processed = process_rec(logs, Some(root_duration));
+                        duration
+                    })
+                    .sum::<u64>();
 
-                    let duration = match processed {
-                        MyProcessedLogs::Span(ref span) => Some(span.duration),
-                        _ => None,
-                    };
-
-                    // Side effect: Push processed logs to processed_buf
-                    processed_buf.push(processed);
-
-                    duration
+                MyProcessedLogs::Span(MyProcessedSpan {
+                    timestamp: span_buf.timestamp,
+                    name: span_buf.name,
+                    processed_buf,
+                    uuid: span_buf.uuid,
+                    nested_duration,
+                    total_duration: duration.as_nanos() as u64,
                 })
-                // Returns `None` if nothing comes out of the iterator, otherwise sums
-                .fold(None, |sum_opt, child_duration| {
-                    let sum = sum_opt.unwrap_or(0.0);
-                    Some(sum + child_duration)
-                })
-                .map(|nested_duration| 100.0 * (duration - nested_duration) / root_duration);
-
-            let total_load = 100.0 * (duration / root_duration);
-
-            MyProcessedLogs::Span(MyProcessedSpan {
-                timestamp: span_buf.timestamp,
-                name: span_buf.name,
-                duration,
-                direct_load,
-                total_load,
-                processed_buf,
-                uuid: span_buf.uuid,
-            })
+            }
         }
+    }
+}
 
-        process_rec(self, None)
+impl MyEventTag {
+    pub fn pretty(self) -> &'static str {
+        match self {
+            MyEventTag::AdminError => "admin.error",
+            MyEventTag::AdminWarn => "admin.warn",
+            MyEventTag::AdminInfo => "admin.info",
+            MyEventTag::RequestError => "request.error",
+            MyEventTag::RequestWarn => "request.error",
+            MyEventTag::RequestInfo => "request.info",
+            MyEventTag::RequestTrace => "request.trace",
+            MyEventTag::SecurityCritical => "security.critical",
+            MyEventTag::SecurityInfo => "security.info",
+            MyEventTag::SecurityAccess => "security.access",
+            MyEventTag::FilterError => "filter.error",
+            MyEventTag::FilterWarn => "filter.warn",
+            MyEventTag::FilterInfo => "filter.info",
+            MyEventTag::FilterTrace => "filter.trace",
+            MyEventTag::PerfTrace => "perf.trace",
+        }
     }
 }
 
