@@ -1,5 +1,4 @@
-use std::any::TypeId;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::fmt::{self, Write as _};
 use std::time::Duration;
 
@@ -9,87 +8,93 @@ use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Id, Level, Metadata, Subscriber};
 use tracing_subscriber::layer::{Context, Layered, SubscriberExt};
-use tracing_subscriber::registry::{Registry, SpanRef};
+use tracing_subscriber::registry::{Registry, Scope, ScopeFromRoot, SpanRef};
 use tracing_subscriber::Layer;
 use uuid::Uuid;
 
 use crate::formatter::LogFmt;
 use crate::timings::Timer;
 
-pub struct MySubscriber {
-    inner: Layered<MyLayer, Registry>,
+pub struct TreeSubscriber<E> {
+    inner: Layered<TreeLayer<E>, Registry>,
 }
 
-pub struct MyLayer {
+struct TreeLayer<E> {
     fmt: LogFmt,
-    log_tx: UnboundedSender<(LogFmt, MyLogs)>,
+    log_tx: UnboundedSender<TreeProcessor<E>>,
 }
 
 #[derive(Debug)]
-pub struct MyEvent {
+pub(crate) struct TreeEvent<E> {
     pub timestamp: DateTime<Utc>,
     pub message: String,
     pub level: Level,
-    pub tag: Option<MyEventTag>,
+    pub tag: Option<E>,
     pub values: Vec<(&'static str, String)>,
 }
 
 #[derive(Debug)]
-pub struct MySpanBuf {
+struct TreeSpan<E> {
     pub timestamp: DateTime<Utc>,
     pub name: &'static str,
-    pub buf: Vec<MyLogs>,
+    pub buf: Vec<Tree<E>>,
     pub uuid: Option<String>, // Must convert to `fmt::Debug` object to pass field boundry
 }
 
 #[derive(Debug)]
-pub enum MyLogs {
-    Event(MyEvent),
-    SpanBuf(MySpanBuf, Duration),
+enum Tree<E> {
+    Event(TreeEvent<E>),
+    Span(TreeSpan<E>, Duration),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum MyEventTag {
-    AdminError,
-    AdminWarn,
-    AdminInfo,
-    RequestError,
-    RequestWarn,
-    RequestInfo,
-    RequestTrace,
-    SecurityCritical,
-    SecurityInfo,
-    SecurityAccess,
-    FilterError,
-    FilterWarn,
-    FilterInfo,
-    FilterTrace,
-    PerfTrace,
+#[derive(Debug)]
+pub struct TreeProcessor<E> {
+    fmt: LogFmt,
+    logs: Tree<E>,
 }
 
-pub struct MyProcessedSpan {
+pub trait EventTagSet:
+    'static + Send + Sync + fmt::Debug + Copy + TryFrom<u64, Error = ()> + Into<u64>
+{
+    fn pretty(self) -> &'static str;
+
+    fn emoji(self) -> &'static str;
+}
+
+pub(crate) struct TreeSpanProcessed<E> {
     pub timestamp: DateTime<Utc>,
     pub name: &'static str,
-    pub processed_buf: Vec<MyProcessedLogs>,
+    pub processed_buf: Vec<TreeProcessed<E>>,
     pub uuid: Option<String>,
     pub nested_duration: u64,
     pub total_duration: u64,
 }
 
-pub enum MyProcessedLogs {
-    Event(MyEvent),
-    Span(MyProcessedSpan),
+pub(crate) enum TreeProcessed<E> {
+    Event(TreeEvent<E>),
+    Span(TreeSpanProcessed<E>),
 }
 
-impl MySubscriber {
-    pub fn new(fmt: LogFmt, log_tx: UnboundedSender<(LogFmt, MyLogs)>) -> Self {
-        MySubscriber {
-            inner: Registry::default().with(MyLayer { fmt, log_tx }),
+impl<E: EventTagSet> TreeSubscriber<E> {
+    // Only reason this is public is so we can configure at runtime.
+    pub fn new(fmt: LogFmt, log_tx: UnboundedSender<TreeProcessor<E>>) -> Self {
+        TreeSubscriber {
+            inner: Registry::default().with(TreeLayer { fmt, log_tx }),
         }
+    }
+
+    // These are the preferred constructors.
+
+    pub fn json(log_tx: UnboundedSender<TreeProcessor<E>>) -> Self {
+        TreeSubscriber::new(LogFmt::Json, log_tx)
+    }
+
+    pub fn pretty(log_tx: UnboundedSender<TreeProcessor<E>>) -> Self {
+        TreeSubscriber::new(LogFmt::Pretty, log_tx)
     }
 }
 
-impl Subscriber for MySubscriber {
+impl<E: EventTagSet> Subscriber for TreeSubscriber<E> {
     fn enabled(&self, metadata: &Metadata) -> bool {
         self.inner.enabled(metadata)
     }
@@ -129,35 +134,52 @@ impl Subscriber for MySubscriber {
     fn try_close(&self, id: Id) -> bool {
         self.inner.try_close(id)
     }
-
-    unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
-        if id == TypeId::of::<Self>() {
-            Some(self as *const Self as *const ())
-        } else {
-            self.inner.downcast_raw(id)
-        }
-    }
 }
 
-impl MyLayer {
-    fn log_to_parent<'a>(&self, logs: MyLogs, parent: Option<SpanRef<'a, Registry>>) {
+impl<E: EventTagSet> TreeLayer<E> {
+    fn log_to_parent(&self, logs: Tree<E>, parent: Option<SpanRef<Registry>>) {
         match parent {
             // The parent exists- write to them
             Some(span) => span
                 .extensions_mut()
-                .get_mut::<MySpanBuf>()
+                .get_mut::<TreeSpan<E>>()
                 .expect("Log buffer not found, this is a bug")
                 .log(logs),
             // The parent doesn't exist- send to formatter
             None => self
                 .log_tx
-                .send((self.fmt, logs))
+                .send(TreeProcessor {
+                    fmt: self.fmt,
+                    logs,
+                })
                 .expect("Failed to write logs"),
         }
     }
+
+    fn alarm(event: &TreeEvent<E>, maybe_scope: Option<ScopeFromRoot<Registry>>) -> fmt::Result {
+        // This is an emergency and should be sent to the admin immediately
+        // Hence why we are formatting in the working thread
+        let mut writer = event.timestamp.to_rfc3339();
+        write!(writer, " 🚨 [ALARM]")?;
+
+        if let Some(scope) = maybe_scope {
+            for span in scope {
+                write!(writer, "🔹{}", span.name())?;
+            }
+        }
+
+        write!(writer, ": {}", event.message)?;
+
+        for (key, value) in event.values.iter() {
+            write!(writer, " | {}={}", key, value)?;
+        }
+
+        eprintln!("{}", writer);
+        Ok(())
+    }
 }
 
-impl Layer<Registry> for MyLayer {
+impl<E: EventTagSet> Layer<Registry> for TreeLayer<E> {
     fn new_span(&self, attrs: &Attributes, id: &Id, ctx: Context<Registry>) {
         let span = ctx.span(id).expect("Span not found, this is a bug");
 
@@ -182,14 +204,19 @@ impl Layer<Registry> for MyLayer {
 
         let mut extensions = span.extensions_mut();
 
-        extensions.insert(MySpanBuf::new(name, uuid));
+        extensions.insert(TreeSpan::<E>::new(name, uuid));
         extensions.insert(Timer::new());
     }
 
     fn on_event(&self, event: &Event, ctx: Context<Registry>) {
-        let logs = MyLogs::event(event);
+        let (tree_event, alarm) = TreeEvent::parse(event);
 
-        self.log_to_parent(logs, ctx.event_span(event));
+        if alarm {
+            let maybe_scope = ctx.event_scope(event).map(Scope::from_root);
+            TreeLayer::alarm(&tree_event, maybe_scope).expect("Alarm failed");
+        }
+
+        self.log_to_parent(Tree::Event(tree_event), ctx.event_span(event));
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<Registry>) {
@@ -216,7 +243,7 @@ impl Layer<Registry> for MyLayer {
         let mut extensions = span.extensions_mut();
 
         let span_buf = extensions
-            .remove::<MySpanBuf>()
+            .remove::<TreeSpan<E>>()
             .expect("Span buffer not found, this is a bug");
 
         let duration = extensions
@@ -224,15 +251,86 @@ impl Layer<Registry> for MyLayer {
             .expect("Timer not found, this is a bug")
             .duration();
 
-        let logs = MyLogs::SpanBuf(span_buf, duration);
+        let logs = Tree::Span(span_buf, duration);
 
         self.log_to_parent(logs, span.parent());
     }
 }
 
-impl MySpanBuf {
+impl<E: EventTagSet> TreeEvent<E> {
+    fn parse(event: &Event) -> (Self, bool) {
+        let timestamp = Utc::now();
+        let level = *event.metadata().level();
+
+        #[derive(Default)]
+        struct Visitor<TagSet> {
+            message: String,
+            tag: Option<TagSet>,
+            values: Vec<(&'static str, String)>,
+            alarm: bool,
+        }
+
+        impl<TagSet: EventTagSet> Visit for Visitor<TagSet> {
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                if field.name() == "event_tag" {
+                    let tag = TagSet::try_from(value)
+                        .unwrap_or_else(|_| panic!("Invalid `event_tag`: {}", value));
+                    self.tag = Some(tag);
+                } else {
+                    self.record_debug(field, &value)
+                }
+            }
+
+            fn record_bool(&mut self, field: &Field, value: bool) {
+                if field.name() == "alarm" {
+                    self.alarm = value;
+                } else {
+                    self.record_debug(field, &value)
+                }
+            }
+
+            fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+                if field.name() == "message" {
+                    use fmt::Write;
+                    write!(self.message, "{:?}", value).expect("Write failed");
+                } else {
+                    self.values.push((field.name(), format!("{:?}", value)));
+                }
+            }
+        }
+
+        let mut v = Visitor {
+            message: String::new(),
+            tag: None,
+            values: vec![],
+            alarm: false,
+        };
+
+        event.record(&mut v);
+
+        let Visitor {
+            message,
+            tag,
+            values,
+            alarm,
+        } = v;
+
+        (
+            TreeEvent {
+                timestamp,
+                message,
+                level,
+                tag,
+                values,
+            },
+            alarm,
+        )
+    }
+}
+
+impl<E> TreeSpan<E> {
     fn new(name: &'static str, uuid: Option<String>) -> Self {
-        MySpanBuf {
+        TreeSpan {
             timestamp: Utc::now(),
             name,
             buf: vec![],
@@ -240,61 +338,16 @@ impl MySpanBuf {
         }
     }
 
-    fn log(&mut self, logs: MyLogs) {
+    fn log(&mut self, logs: Tree<E>) {
         self.buf.push(logs)
     }
 }
 
-impl MyLogs {
-    fn event(event: &Event) -> Self {
-        let timestamp = Utc::now();
-        let level = *event.metadata().level();
-
-        struct Visitor<'a>(
-            &'a mut String,
-            &'a mut Option<MyEventTag>,
-            &'a mut Vec<(&'static str, String)>,
-        );
-
-        impl<'a> Visit for Visitor<'a> {
-            fn record_u64(&mut self, field: &Field, value: u64) {
-                if field.name() == "event_tag" {
-                    let tag = value
-                        .try_into()
-                        .expect(&format!("Invalid `event_tag`: {}", value));
-                    *self.1 = Some(tag);
-                }
-            }
-
-            fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-                if field.name() == "message" {
-                    use fmt::Write;
-                    write!(self.0, "{:?}", value).expect("Write failed");
-                } else {
-                    self.2.push((field.name(), format!("{:?}", value)));
-                }
-            }
-        }
-
-        let mut message = String::new();
-        let mut tag = None;
-        let mut values = vec![];
-
-        event.record(&mut Visitor(&mut message, &mut tag, &mut values));
-
-        MyLogs::Event(MyEvent {
-            timestamp,
-            message,
-            level,
-            tag,
-            values,
-        })
-    }
-
-    pub fn process(self) -> MyProcessedLogs {
+impl<E: EventTagSet> Tree<E> {
+    pub fn process(self) -> TreeProcessed<E> {
         match self {
-            MyLogs::Event(event) => MyProcessedLogs::Event(event),
-            MyLogs::SpanBuf(span_buf, duration) => {
+            Tree::Event(event) => TreeProcessed::Event(event),
+            Tree::Span(span_buf, duration) => {
                 let mut processed_buf = vec![];
 
                 let nested_duration = span_buf
@@ -304,7 +357,7 @@ impl MyLogs {
                         let processed = logs.process();
 
                         let duration = match processed {
-                            MyProcessedLogs::Span(ref span) => span.total_duration,
+                            TreeProcessed::Span(ref span) => span.total_duration,
                             _ => 0,
                         };
 
@@ -315,7 +368,7 @@ impl MyLogs {
                     })
                     .sum::<u64>();
 
-                MyProcessedLogs::Span(MyProcessedSpan {
+                TreeProcessed::Span(TreeSpanProcessed {
                     timestamp: span_buf.timestamp,
                     name: span_buf.name,
                     processed_buf,
@@ -328,76 +381,9 @@ impl MyLogs {
     }
 }
 
-impl MyEventTag {
-    pub fn pretty(self) -> &'static str {
-        match self {
-            MyEventTag::AdminError => "admin.error",
-            MyEventTag::AdminWarn => "admin.warn",
-            MyEventTag::AdminInfo => "admin.info",
-            MyEventTag::RequestError => "request.error",
-            MyEventTag::RequestWarn => "request.error",
-            MyEventTag::RequestInfo => "request.info",
-            MyEventTag::RequestTrace => "request.trace",
-            MyEventTag::SecurityCritical => "security.critical",
-            MyEventTag::SecurityInfo => "security.info",
-            MyEventTag::SecurityAccess => "security.access",
-            MyEventTag::FilterError => "filter.error",
-            MyEventTag::FilterWarn => "filter.warn",
-            MyEventTag::FilterInfo => "filter.info",
-            MyEventTag::FilterTrace => "filter.trace",
-            MyEventTag::PerfTrace => "perf.trace",
-        }
-    }
-}
-
-// The purpose of these functions is to allow us to pass a `MyEventTag` through the fields key-value barrier,
-// where `record` only allows, `i64`, `u64`, `bool`, `&str`, and `dyn fmt::Debug` values.
-// We use `u64` because it's faster than `&str`, and would take the same space to transform.
-impl From<MyEventTag> for u64 {
-    fn from(tag: MyEventTag) -> Self {
-        use MyEventTag::*;
-        match tag {
-            AdminError => 0,
-            AdminWarn => 1,
-            AdminInfo => 2,
-            RequestError => 3,
-            RequestWarn => 4,
-            RequestInfo => 5,
-            RequestTrace => 6,
-            SecurityCritical => 7,
-            SecurityInfo => 8,
-            SecurityAccess => 9,
-            FilterError => 10,
-            FilterWarn => 11,
-            FilterInfo => 12,
-            FilterTrace => 13,
-            PerfTrace => 14,
-        }
-    }
-}
-
-impl TryFrom<u64> for MyEventTag {
-    type Error = ();
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        use MyEventTag::*;
-        Ok(match value {
-            0 => AdminError,
-            1 => AdminWarn,
-            2 => AdminInfo,
-            3 => RequestError,
-            4 => RequestWarn,
-            5 => RequestInfo,
-            6 => RequestTrace,
-            7 => SecurityCritical,
-            8 => SecurityInfo,
-            9 => SecurityAccess,
-            10 => FilterError,
-            11 => FilterWarn,
-            12 => FilterInfo,
-            13 => FilterTrace,
-            14 => PerfTrace,
-            _ => return Err(()),
-        })
+impl<E: EventTagSet> TreeProcessor<E> {
+    pub fn process(self) -> Vec<u8> {
+        let processed_logs = self.logs.process();
+        self.fmt.format(processed_logs)
     }
 }

@@ -1,14 +1,17 @@
 pub mod formatter;
 pub mod subscriber;
-pub(crate) mod timings;
+mod timings;
+
+#[macro_use]
+pub mod kanidm;
 
 #[macro_use]
 pub mod macros;
 
 #[cfg(test)]
 mod tests {
-    use crate::formatter::LogFmt;
-    use crate::subscriber::{MyLogs, MySubscriber};
+    use crate::kanidm::KanidmEventTag;
+    use crate::subscriber::{TreeProcessor, TreeSubscriber};
     use std::io;
     use tokio;
     use tokio::sync::mpsc::unbounded_channel as unbounded;
@@ -18,9 +21,9 @@ mod tests {
 
     #[tokio::test]
     async fn async_tests() {
-        let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyLogs)>();
+        let (log_tx, mut log_rx) = unbounded::<TreeProcessor<KanidmEventTag>>();
 
-        let subscriber = MySubscriber::new(LogFmt::Json, log_tx);
+        let subscriber = TreeSubscriber::pretty(log_tx);
         let guard = tracing::subscriber::set_default(subscriber);
 
         #[instrument]
@@ -50,21 +53,17 @@ mod tests {
         // drop so all the senders are gone
         drop(guard);
 
-        while let Some((fmt, logs)) = log_rx.recv().await {
-            let processed_logs = logs.process();
-            let formatted_logs = match fmt {
-                LogFmt::Json => crate::formatter::format_json(processed_logs),
-                LogFmt::Pretty => crate::formatter::format_pretty(processed_logs),
-            };
+        while let Some(processor) = log_rx.recv().await {
+            let formatted_logs = processor.process();
             io::Write::write(&mut io::stderr(), &formatted_logs[..]).expect("Write failed");
         }
     }
 
     #[tokio::test]
     async fn deep_spans() {
-        let (log_tx, mut log_rx) = unbounded::<(LogFmt, MyLogs)>();
+        let (log_tx, mut log_rx) = unbounded::<TreeProcessor<KanidmEventTag>>();
 
-        let subscriber = MySubscriber::new(LogFmt::Json, log_tx);
+        let subscriber = TreeSubscriber::pretty(log_tx);
         let guard = tracing::subscriber::set_default(subscriber);
 
         trace_span!("try_from_entry_ro").in_scope(|| {
@@ -77,7 +76,12 @@ mod tests {
                                 .in_scope(|| filter_info!("Some filter info..."));
                             trace_span!("be::idl_arc_sqlite::get_idl").in_scope(|| {
                                 admin_error!("Oopsies, an admin error occurred :)");
-                                debug!("An untagged debug log")
+                                debug!("An untagged debug log");
+                                alarm!(
+                                    alive = false,
+                                    status = "very sad",
+                                    "there's been a big mistake"
+                                )
                             })
                         });
                         trace_span!("be::idl_arc_sqlite::get_identry").in_scope(|| {
@@ -95,12 +99,8 @@ mod tests {
         // drop so all the senders are gone
         drop(guard);
 
-        while let Some((fmt, logs)) = log_rx.recv().await {
-            let processed_logs = logs.process();
-            let formatted_logs = match fmt {
-                LogFmt::Json => crate::formatter::format_json(processed_logs),
-                LogFmt::Pretty => crate::formatter::format_pretty(processed_logs),
-            };
+        while let Some(processor) = log_rx.recv().await {
+            let formatted_logs = processor.process();
             io::Write::write(&mut io::stderr(), &formatted_logs[..]).expect("Write failed");
         }
 
