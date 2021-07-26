@@ -105,75 +105,75 @@ impl TryFrom<u64> for KanidmEventTag {
 
 #[macro_export]
 macro_rules! admin_error {
-    ($($arg:tt)*) => { tagged_event!(ERROR, KanidmEventTag::AdminError, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(ERROR, crate::kanidm::KanidmEventTag::AdminError, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! admin_warn {
-    ($($arg:tt)*) => { tagged_event!(WARN, KanidmEventTag::AdminWarn, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(WARN, crate::kanidm::KanidmEventTag::AdminWarn, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! admin_info {
-    ($($arg:tt)*) => { tagged_event!(INFO, KanidmEventTag::AdminInfo, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(INFO, crate::kanidm::KanidmEventTag::AdminInfo, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! request_error {
-    ($($arg:tt)*) => { tagged_event!(ERROR, KanidmEventTag::RequestError, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(ERROR, crate::kanidm::KanidmEventTag::RequestError, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! request_warn {
-    ($($arg:tt)*) => { tagged_event!(WARN, KanidmEventTag::RequestWarn, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(WARN, crate::kanidm::KanidmEventTag::RequestWarn, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! request_info {
-    ($($arg:tt)*) => { tagged_event!(INFO, KanidmEventTag::RequestInfo, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(INFO, crate::kanidm::KanidmEventTag::RequestInfo, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! request_trace {
-    ($($arg:tt)*) => { tagged_event!(TRACE, KanidmEventTag::RequestTrace, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(TRACE, crate::kanidm::KanidmEventTag::RequestTrace, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! security_critical {
-    ($($arg:tt)*) => { tagged_event!(INFO, KanidmEventTag::SecurityCritical, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(INFO, crate::kanidm::KanidmEventTag::SecurityCritical, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! security_info {
-    ($($arg:tt)*) => { tagged_event!(INFO, KanidmEventTag::SecurityInfo, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(INFO, crate::kanidm::KanidmEventTag::SecurityInfo, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! security_access {
-    ($($arg:tt)*) => { tagged_event!(INFO, KanidmEventTag::SecurityAccess, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(INFO, crate::kanidm::KanidmEventTag::SecurityAccess, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! filter_error {
-    ($($arg:tt)*) => { tagged_event!(ERROR, KanidmEventTag::FilterError, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(ERROR, crate::kanidm::KanidmEventTag::FilterError, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! filter_warn {
-    ($($arg:tt)*) => { tagged_event!(WARN, KanidmEventTag::FilterWarn, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(WARN, crate::kanidm::KanidmEventTag::FilterWarn, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! filter_info {
-    ($($arg:tt)*) => { tagged_event!(INFO, KanidmEventTag::FilterInfo, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(INFO, crate::kanidm::KanidmEventTag::FilterInfo, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! filter_trace {
-    ($($arg:tt)*) => { tagged_event!(TRACE, KanidmEventTag::FilterTrace, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(TRACE, crate::kanidm::KanidmEventTag::FilterTrace, $($arg)*) }
 }
 
 #[macro_export]
 macro_rules! perf_trace {
-    ($($arg:tt)*) => { tagged_event!(TRACE, KanidmEventTag::PerfTrace, $($arg)*) }
+    ($($arg:tt)*) => { tagged_event!(TRACE, crate::kanidm::KanidmEventTag::PerfTrace, $($arg)*) }
 }
