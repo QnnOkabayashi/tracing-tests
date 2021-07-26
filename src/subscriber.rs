@@ -262,7 +262,6 @@ impl<E: EventTagSet> TreeEvent<E> {
         let timestamp = Utc::now();
         let level = *event.metadata().level();
 
-        #[derive(Default)]
         struct Visitor<TagSet> {
             message: String,
             tag: Option<TagSet>,
