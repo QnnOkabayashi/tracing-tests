@@ -8,6 +8,8 @@ pub mod kanidm;
 #[macro_use]
 pub mod macros;
 
+mod middleware;
+
 #[cfg(test)]
 mod tests {
     use crate::kanidm::KanidmEventTag;
