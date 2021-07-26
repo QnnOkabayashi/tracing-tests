@@ -13,6 +13,7 @@ mod middleware;
 #[cfg(test)]
 mod tests {
     use crate::kanidm::KanidmEventTag;
+    use crate::middleware::TreeMiddleware;
     use crate::subscriber::{TreeProcessor, TreeSubscriber};
     use std::io;
     use tokio;
@@ -107,5 +108,35 @@ mod tests {
         }
 
         println!("done");
+    }
+
+    #[tokio::test]
+    async fn middleware_test() {
+        let (log_tx, mut log_rx) = unbounded::<TreeProcessor<KanidmEventTag>>();
+
+        let subscriber = TreeSubscriber::pretty(log_tx);
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let listener = async {
+            tracing::trace!("hello");
+            let mut app = tide::new();
+            app.with(TreeMiddleware::new());
+            app.at("/").get(|_| async { Ok("Hello, world!") });
+            app.listen("127.0.0.1:8080").await.unwrap();
+        };
+
+        let timeout = sleep(Duration::from_secs(3));
+
+        tokio::select! {
+            _ = listener => (),
+            _ = timeout => (),
+        };
+
+        drop(guard);
+
+        while let Some(processor) = log_rx.recv().await {
+            let formatted_logs = processor.process();
+            io::Write::write(&mut io::stderr(), &formatted_logs[..]).expect("Write failed");
+        }
     }
 }

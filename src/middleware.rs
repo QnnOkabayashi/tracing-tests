@@ -5,7 +5,7 @@ use tracing::{self, field::display, trace_span, Instrument};
 // Modeled after:
 // https://docs.rs/tide/0.16.0/src/tide/log/middleware.rs.html#23-96
 
-struct TreeMiddleware {}
+pub struct TreeMiddleware {}
 
 struct TreeMiddlewareFinished;
 
@@ -32,7 +32,7 @@ impl TreeMiddleware {
         let path = path.as_str();
         let method = method.as_ref();
 
-        request_info!(method, path, "Request received");
+        request_info!(http.method = method, path, "Request received");
 
         let response = next.run(req).await;
         let status = response.status();
