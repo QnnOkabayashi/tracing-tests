@@ -1,17 +1,17 @@
 use crate::{request_error, request_info, request_warn};
 use tide::{self, Middleware, Next, Request};
-use tracing::{self, field::display, trace_span, Instrument};
+use tracing::{self, trace_span, Instrument};
 
 // Modeled after:
 // https://docs.rs/tide/0.16.0/src/tide/log/middleware.rs.html#23-96
 
-pub struct TreeMiddleware {}
-
-struct TreeMiddlewareFinished;
+pub struct TreeMiddleware {
+    output: &'static str,
+}
 
 impl TreeMiddleware {
-    pub fn new() -> Self {
-        TreeMiddleware {}
+    pub fn new(output: &'static str) -> Self {
+        TreeMiddleware { output }
     }
 
     // This method is only called when `instrument`ed.
@@ -20,6 +20,8 @@ impl TreeMiddleware {
         mut req: Request<State>,
         next: Next<'a, State>,
     ) -> tide::Result {
+        struct TreeMiddlewareFinished;
+
         if req.ext::<TreeMiddlewareFinished>().is_some() {
             return Ok(next.run(req).await);
         }
@@ -28,7 +30,6 @@ impl TreeMiddleware {
         let path = req.url().path().to_string();
         let method = req.method();
 
-        // Shadow owners
         let path = path.as_str();
         let method = method.as_ref();
 
@@ -80,7 +81,7 @@ impl TreeMiddleware {
 impl<State: Clone + Send + Sync + 'static> Middleware<State> for TreeMiddleware {
     async fn handle(&self, req: Request<State>, next: Next<'_, State>) -> tide::Result {
         self.log(req, next)
-            .instrument(trace_span!("tide-request"))
+            .instrument(trace_span!("tide-request", output = self.output))
             .await
     }
 }

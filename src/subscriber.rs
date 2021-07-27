@@ -1,5 +1,7 @@
 use std::convert::TryFrom;
 use std::fmt::{self, Write as _};
+use std::fs::OpenOptions;
+use std::io::{self, Write as _};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -38,7 +40,8 @@ struct TreeSpan<E> {
     pub timestamp: DateTime<Utc>,
     pub name: &'static str,
     pub buf: Vec<Tree<E>>,
-    pub uuid: Option<String>, // Must convert to `fmt::Debug` object to pass field boundry
+    pub uuid: Option<String>,
+    pub out: TreeIo,
 }
 
 #[derive(Debug)]
@@ -51,6 +54,14 @@ enum Tree<E> {
 pub struct TreeProcessor<E> {
     fmt: LogFmt,
     logs: Tree<E>,
+}
+
+#[derive(Debug)]
+pub enum TreeIo {
+    Stdout,
+    Stderr,
+    File(String),
+    Parent,
 }
 
 pub trait EventTagSet:
@@ -66,6 +77,7 @@ pub(crate) struct TreeSpanProcessed<E> {
     pub name: &'static str,
     pub processed_buf: Vec<TreeProcessed<E>>,
     pub uuid: Option<String>,
+    pub out: TreeIo,
     pub nested_duration: u64,
     pub total_duration: u64,
 }
@@ -152,7 +164,7 @@ impl<E: EventTagSet> TreeLayer<E> {
                     fmt: self.fmt,
                     logs,
                 })
-                .expect("Failed to write logs"),
+                .expect("Processing channel has been closed, cannot log events."),
         }
     }
 
@@ -185,15 +197,43 @@ impl<E: EventTagSet> Layer<Registry> for TreeLayer<E> {
 
         let name = attrs.metadata().name();
 
-        let mut uuid = None;
+        struct Visitor<'a> {
+            ctx: &'a Context<'a, Registry>,
+            uuid: Option<String>,
+            out: TreeIo,
+        }
 
-        attrs.record(&mut |field: &Field, value: &dyn fmt::Debug| {
-            if field.name() == "uuid" {
-                let mut buf = String::with_capacity(36);
-                write!(&mut buf, "{:?}", value).expect("Write failed");
-                uuid = Some(buf);
+        impl<'a> Visit for Visitor<'a> {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                if self.ctx.lookup_current().is_none() && field.name() == "output" {
+                    self.out = match value {
+                        "stdout" => TreeIo::Stdout,
+                        "stderr" => TreeIo::Stderr,
+                        _ => TreeIo::File(value.to_string()),
+                    }
+                } else {
+                    self.record_debug(field, &value);
+                }
             }
-        });
+
+            fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+                if field.name() == "uuid" {
+                    let mut buf = String::with_capacity(36);
+                    write!(&mut buf, "{:?}", value).expect("Write failed");
+                    self.uuid = Some(buf);
+                }
+            }
+        }
+
+        let mut v = Visitor {
+            ctx: &ctx,
+            uuid: None,
+            out: TreeIo::Stderr,
+        };
+
+        attrs.record(&mut v);
+
+        let Visitor { uuid, out, .. } = v;
 
         // Take provided ID, or make a fresh one if there's no parent span.
         let uuid = uuid.or_else(|| {
@@ -204,7 +244,7 @@ impl<E: EventTagSet> Layer<Registry> for TreeLayer<E> {
 
         let mut extensions = span.extensions_mut();
 
-        extensions.insert(TreeSpan::<E>::new(name, uuid));
+        extensions.insert(TreeSpan::<E>::new(name, uuid, out));
         extensions.insert(Timer::new());
     }
 
@@ -328,12 +368,13 @@ impl<E: EventTagSet> TreeEvent<E> {
 }
 
 impl<E> TreeSpan<E> {
-    fn new(name: &'static str, uuid: Option<String>) -> Self {
+    fn new(name: &'static str, uuid: Option<String>, out: TreeIo) -> Self {
         TreeSpan {
             timestamp: Utc::now(),
             name,
             buf: vec![],
             uuid,
+            out,
         }
     }
 
@@ -372,6 +413,7 @@ impl<E: EventTagSet> Tree<E> {
                     name: span_buf.name,
                     processed_buf,
                     uuid: span_buf.uuid,
+                    out: span_buf.out,
                     nested_duration,
                     total_duration: duration.as_nanos() as u64,
                 })
@@ -381,8 +423,25 @@ impl<E: EventTagSet> Tree<E> {
 }
 
 impl<E: EventTagSet> TreeProcessor<E> {
-    pub fn process(self) -> Vec<u8> {
+    pub fn process(self) -> io::Result<()> {
         let processed_logs = self.logs.process();
-        self.fmt.format(processed_logs)
+        let formatted_logs = self.fmt.format(&processed_logs);
+
+        let buf = &formatted_logs[..];
+
+        match processed_logs {
+            TreeProcessed::Event(_) => io::stderr().write_all(buf),
+            TreeProcessed::Span(TreeSpanProcessed { out, .. }) => match out {
+                TreeIo::Stdout | TreeIo::Parent => io::stdout().write_all(buf),
+                TreeIo::Stderr => io::stderr().write_all(buf),
+                TreeIo::File(path) => OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap_or_else(|_| panic!("Failed to open file: {}", path))
+                    .write_all(buf),
+            },
+        }
     }
 }

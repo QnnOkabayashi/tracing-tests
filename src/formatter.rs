@@ -14,7 +14,7 @@ pub enum LogFmt {
 const EVENT_UUID: &str = "00000000-0000-0000-0000-000000000000";
 
 impl LogFmt {
-    pub(crate) fn format<A: EventTagSet>(self, processed_logs: TreeProcessed<A>) -> Vec<u8> {
+    pub(crate) fn format<A: EventTagSet>(self, processed_logs: &TreeProcessed<A>) -> Vec<u8> {
         match self {
             LogFmt::Json => format_json(processed_logs),
             LogFmt::Pretty => format_pretty(processed_logs),
@@ -22,7 +22,7 @@ impl LogFmt {
     }
 }
 
-fn format_json<A: EventTagSet>(processed_logs: TreeProcessed<A>) -> Vec<u8> {
+fn format_json<A: EventTagSet>(processed_logs: &TreeProcessed<A>) -> Vec<u8> {
     fn fmt_rec<'a, B: EventTagSet>(
         tree: &TreeProcessed<B>,
         spans: &'a mut Vec<&'static str>,
@@ -114,7 +114,7 @@ fn format_json<A: EventTagSet>(processed_logs: TreeProcessed<A>) -> Vec<u8> {
     writer
 }
 
-fn format_pretty<A: EventTagSet>(processed_logs: TreeProcessed<A>) -> Vec<u8> {
+fn format_pretty<A: EventTagSet>(processed_logs: &TreeProcessed<A>) -> Vec<u8> {
     #[derive(Clone, Copy)]
     enum Fill {
         Void,
@@ -166,11 +166,11 @@ fn format_pretty<A: EventTagSet>(processed_logs: TreeProcessed<A>) -> Vec<u8> {
                     .tag
                     .map(B::pretty)
                     .unwrap_or_else(|| match event.level {
-                        Level::ERROR => "_.error",
-                        Level::WARN => "_.warn",
-                        Level::INFO => "_.info",
-                        Level::DEBUG => "_.debug",
-                        Level::TRACE => "_.trace",
+                        Level::ERROR => "error",
+                        Level::WARN => "warn",
+                        Level::INFO => "info",
+                        Level::DEBUG => "debug",
+                        Level::TRACE => "trace",
                     });
 
                 write!(writer, "{} {} {:<8} ", uuid, timestamp_fmt, event.level)?;
