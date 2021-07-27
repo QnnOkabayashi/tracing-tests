@@ -27,7 +27,7 @@ impl EventTagSet for KanidmEventTag {
             KanidmEventTag::AdminWarn => "admin.warn",
             KanidmEventTag::AdminInfo => "admin.info",
             KanidmEventTag::RequestError => "request.error",
-            KanidmEventTag::RequestWarn => "request.error",
+            KanidmEventTag::RequestWarn => "request.warn",
             KanidmEventTag::RequestInfo => "request.info",
             KanidmEventTag::RequestTrace => "request.trace",
             KanidmEventTag::SecurityCritical => "security.critical",
