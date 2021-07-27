@@ -15,7 +15,6 @@ mod tests {
     use crate::kanidm::KanidmEventTag;
     use crate::middleware::TreeMiddleware;
     use crate::subscriber::{TreeProcessor, TreeSubscriber};
-    use std::io;
     use tokio;
     use tokio::sync::mpsc::unbounded_channel as unbounded;
     use tokio::time::{sleep, Duration};
@@ -57,8 +56,7 @@ mod tests {
         drop(guard);
 
         while let Some(processor) = log_rx.recv().await {
-            let formatted_logs = processor.process();
-            io::Write::write(&mut io::stderr(), &formatted_logs[..]).expect("Write failed");
+            processor.process().expect("Write failed");
         }
     }
 
@@ -69,7 +67,7 @@ mod tests {
         let subscriber = TreeSubscriber::pretty(log_tx);
         let guard = tracing::subscriber::set_default(subscriber);
 
-        trace_span!("try_from_entry_ro").in_scope(|| {
+        trace_span!("try_from_entry_ro", output = "test-out/deep_spans_test.log").in_scope(|| {
             trace_span!("server::internal_search").in_scope(|| {
                 filter_info!("Some filter info...");
                 trace_span!("server::search").in_scope(|| {
@@ -103,8 +101,7 @@ mod tests {
         drop(guard);
 
         while let Some(processor) = log_rx.recv().await {
-            let formatted_logs = processor.process();
-            io::Write::write(&mut io::stderr(), &formatted_logs[..]).expect("Write failed");
+            processor.process().expect("Write failed");
         }
 
         println!("done");
@@ -115,28 +112,18 @@ mod tests {
         let (log_tx, mut log_rx) = unbounded::<TreeProcessor<KanidmEventTag>>();
 
         let subscriber = TreeSubscriber::pretty(log_tx);
-        let guard = tracing::subscriber::set_default(subscriber);
+        tracing::subscriber::set_global_default(subscriber).unwrap();
 
-        let listener = async {
-            tracing::trace!("hello");
-            let mut app = tide::new();
-            app.with(TreeMiddleware::new());
-            app.at("/").get(|_| async { Ok("Hello, world!") });
-            app.listen("127.0.0.1:8080").await.unwrap();
-        };
+        tokio::spawn(async move {
+            while let Some(processor) = log_rx.recv().await {
+                processor.process().expect("Write failed");
+            }
+        });
 
-        let timeout = sleep(Duration::from_secs(3));
-
-        tokio::select! {
-            _ = listener => (),
-            _ = timeout => (),
-        };
-
-        drop(guard);
-
-        while let Some(processor) = log_rx.recv().await {
-            let formatted_logs = processor.process();
-            io::Write::write(&mut io::stderr(), &formatted_logs[..]).expect("Write failed");
-        }
+        let mut app = tide::new();
+        app.with(TreeMiddleware::new("test_out/middleware_test.log"));
+        app.at("/").get(|_| async { Ok("Hello, world!") });
+        app.at("/sara").get(|_| async { Ok("omg it's sara!") });
+        app.listen("127.0.0.1:8080").await.unwrap();
     }
 }

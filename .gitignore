@@ -1,5 +1,6 @@
 /target
 Cargo.lock
 
-log.json
-log.log
+*.log
+*.json
+/test_out
